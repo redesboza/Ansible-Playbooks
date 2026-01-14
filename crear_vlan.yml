@@ -1,0 +1,16 @@
+---
+- name: Crear VLAN 1200 en switches Cisco SG350
+  hosts: all
+  gather_facts: no
+  connection: network_cli
+
+  tasks:
+    - name: Crear VLAN 1200 con nombre prueba
+      cisco.ios.ios_vlan:
+        vlan_id: 1200
+        name: prueba
+        state: present
+
+    - name: Guardar configuracion si hubo cambios
+      cisco.ios.ios_config:
+        save_when: modified
