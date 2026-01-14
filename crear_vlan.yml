@@ -5,12 +5,13 @@
   connection: network_cli
 
   tasks:
-    - name: Crear VLAN 1200 con nombre prueba
-      cisco.ios.ios_vlan:
-        vlan_id: 1200
-        name: prueba
-        state: present
+    - name: Crear VLAN 1200 con nombre prueba (CLI)
+      ansible.netcommon.cli_config:
+        config: |
+          vlan 1200
+           name prueba
+          exit
 
-    - name: Guardar configuracion si hubo cambios
-      cisco.ios.ios_config:
-        save_when: modified
+    - name: Guardar configuracion
+      ansible.netcommon.cli_command:
+        command: write memory
