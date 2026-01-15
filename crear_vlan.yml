@@ -1,17 +1,17 @@
 ---
-- name: Crear VLAN 1200 en Cisco SG350 por CLI
+- name: Crear VLAN 1200 en SG350 por SSH puro
   hosts: all
   gather_facts: no
-  connection: ansible.netcommon.network_cli
-
-  vars:
-    ansible_network_os: cisco.ios.ios
-    vlan_id: 1200
-    vlan_name: prueba
 
   tasks:
-    - name: Crear VLAN y asignar nombre
-      ansible.netcommon.cli_config:
-        config:
-          - "vlan {{ vlan_id }}"
-          - "name {{ vlan_name }}"
+    - name: Enviar comandos para crear VLAN
+      ansible.builtin.shell: |
+        ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} <<'EOF'
+        configure terminal
+        vlan 1200
+        name prueba
+        end
+        write memory
+        EOF
+      args:
+        executable: /bin/bash
