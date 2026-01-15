@@ -1,17 +1,17 @@
 ---
-- name: Crear VLAN 1200 en switches Cisco SG350
+- name: Crear VLAN 1200 en Cisco SG350 por CLI
   hosts: all
   gather_facts: no
-  connection: network_cli
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    ansible_network_os: cisco.ios.ios
+    vlan_id: 1200
+    vlan_name: prueba
 
   tasks:
-    - name: Crear VLAN 1200 con nombre prueba (CLI)
+    - name: Crear VLAN y asignar nombre
       ansible.netcommon.cli_config:
-        config: |
-          vlan 1200
-           name prueba
-          exit
-
-    - name: Guardar configuracion
-      ansible.netcommon.cli_command:
-        command: write memory
+        config:
+          - "vlan {{ vlan_id }}"
+          - "name {{ vlan_name }}"
