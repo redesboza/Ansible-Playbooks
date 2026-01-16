@@ -1,13 +1,13 @@
 ---
 - name: TEST - Ver colecciones en el EE
   hosts: localhost
-  gather_facts: false
+  gather_facts: no
 
   tasks:
     - name: Mostrar colecciones instaladas
-      ansible.builtin.command: ansible-galaxy collection list
-      register: cols
+      command: ansible-galaxy collection list
+      register: col
+      changed_when: false
 
-    - name: Ver salida
-      ansible.builtin.debug:
-        var: cols.stdout_lines
+    - debug:
+        var: col.stdout_lines
