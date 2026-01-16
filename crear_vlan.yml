@@ -1,17 +1,21 @@
 ---
-- name: Crear VLAN 1200 en SG350 por SSH puro
-  hosts: all
+- name: Crear VLAN 1200 en SG350 Coral Manta y guardar config
+  hosts: coral_manta
   gather_facts: no
 
+  vars:
+    vlan_id: 1200
+    vlan_name: VLAN1200
+
   tasks:
-    - name: Enviar comandos para crear VLAN
-      ansible.builtin.shell: |
-        ssh -p {{ ansible_port | default(22) }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} <<'EOF'
-        configure terminal
-        vlan 1200
-        name prueba
-        end
-        write memory
-        EOF
-      args:
-        executable: /bin/bash
+    - name: Crear VLAN {{ vlan_id }}
+      cisco.ios.ios_vlans:
+        config:
+          - vlan_id: "{{ vlan_id }}"
+            name: "{{ vlan_name }}"
+            state: active
+        state: merged
+
+    - name: Guardar running-config a startup-config (si hubo cambios)
+      cisco.ios.ios_config:
+        save_when: modified
