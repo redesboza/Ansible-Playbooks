@@ -7,12 +7,12 @@
 
   tasks:
     - name: "Mostrar version y VLANs"
-      cisco.ios.ios_command:
+      ios_command:
         commands:
-          - "show version"
-          - "show vlan brief"
+          - show version
+          - show vlan brief
       register: out
 
-    - name: "Ver salida (solo conteo)"
+    - name: "Ver salida"
       debug:
-        msg: "OK. Respuestas: {{ out.stdout | length }}"
+        var: out.stdout_lines
