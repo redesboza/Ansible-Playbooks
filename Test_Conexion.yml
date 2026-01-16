@@ -2,15 +2,17 @@
 - name: "TEST - Conectividad y lectura de datos SG350"
   hosts: coral_manta
   gather_facts: no
+  collections:
+    - cisco.ios
 
   tasks:
     - name: "Mostrar version y VLANs"
       cisco.ios.ios_command:
         commands:
-          - show version
-          - show vlan brief
+          - "show version"
+          - "show vlan brief"
       register: out
 
-    - name: "Ver salida"
+    - name: "Ver salida (solo conteo)"
       debug:
-        var: out.stdout_lines
+        msg: "OK. Respuestas: {{ out.stdout | length }}"
