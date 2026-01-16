@@ -1,21 +1,21 @@
 ---
-- name: Crear VLAN 1200 en SG350 Coral Manta y guardar config
-  hosts: coral_manta
+- name: Crear VLAN 1200 en SG350 (CORAL MANTA)
+  hosts: all
   gather_facts: no
 
   vars:
     vlan_id: 1200
-    vlan_name: VLAN1200
+    vlan_name: PRUEBA
 
   tasks:
-    - name: Crear VLAN {{ vlan_id }}
-      cisco.ios.ios_vlans:
-        config:
-          - vlan_id: "{{ vlan_id }}"
-            name: "{{ vlan_name }}"
-            state: active
-        state: merged
-
-    - name: Guardar running-config a startup-config (si hubo cambios)
+    - name: Crear VLAN y asignar nombre
       cisco.ios.ios_config:
-        save_when: modified
+        lines:
+          - "vlan {{ vlan_id }}"
+          - "name {{ vlan_name }}"
+        save_when: never
+
+    - name: Guardar configuracion (write memory)
+      cisco.ios.ios_command:
+        commands:
+          - "write memory"
