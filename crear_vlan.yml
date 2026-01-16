@@ -1,21 +1,21 @@
 ---
-- name: Crear VLAN 1200 en SG350 (CORAL MANTA)
+- name: "Crear VLAN 1200 en SG350 (CORAL MANTA)"
   hosts: all
-  gather_facts: no
+  gather_facts: false
 
   vars:
     vlan_id: 1200
     vlan_name: PRUEBA
 
   tasks:
-    - name: Crear VLAN y asignar nombre
+    - name: "Crear VLAN {{ vlan_id }} y asignar nombre"
       cisco.ios.ios_config:
-        lines:
+        parents:
           - "vlan {{ vlan_id }}"
+        lines:
           - "name {{ vlan_name }}"
-        save_when: never
 
-    - name: Guardar configuracion (write memory)
+    - name: "Guardar configuracion (write memory)"
       cisco.ios.ios_command:
         commands:
           - "write memory"
