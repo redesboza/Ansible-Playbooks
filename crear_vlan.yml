@@ -8,9 +8,13 @@
     vlan_name: "Prueba1"
 
   tasks:
-    - name: Crear VLAN vía SSH
+    - name: Crear VLAN vía SSH (forzando ssh-rsa + terminal)
       ansible.builtin.shell: |
-        ssh -p {{ ansible_port }} -o HostKeyAlgorithms=+ssh-rsa -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} <<'EOF'
+        ssh -tt -p {{ ansible_port }} \
+        -o HostKeyAlgorithms=+ssh-rsa \
+        -o KexAlgorithms=+diffie-hellman-group14-sha1 \
+        -o StrictHostKeyChecking=no \
+        {{ ansible_user }}@{{ inventory_hostname }} <<'EOF'
         enable
         configure terminal
         vlan {{ vlan_id }}
@@ -21,3 +25,4 @@
         EOF
       args:
         executable: /bin/bash
+      timeout: 30
