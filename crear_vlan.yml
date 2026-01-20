@@ -10,7 +10,7 @@
   tasks:
     - name: Crear VLAN vía SSH
       ansible.builtin.shell: |
-        ssh -p {{ ansible_port }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} <<'EOF'
+        ssh -p {{ ansible_port }} -o HostKeyAlgorithms=+ssh-rsa -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} <<'EOF'
         enable
         configure terminal
         vlan {{ vlan_id }}
