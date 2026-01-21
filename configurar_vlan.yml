@@ -1,20 +1,16 @@
----
 - name: Paso 2 - Configurar VLAN en switch
   hosts: all
-  gather_facts: false
-
-  vars:
-    vlan_id: "1300"
-    vlan_name: "Red_Gestion"
-
+  gather_facts: no
   tasks:
     - name: Configurar VLAN con Netmiko
       delegate_to: localhost
-      command: >
-        python3 config_vlan.py
-        {{ ansible_host }}
-        {{ ansible_user }}
-        {{ ansible_ssh_pass }}
-        {{ ansible_port }}
-        {{ vlan_id }}
-        {{ vlan_name }}
+      ansible.builtin.command:
+        argv:
+          - python3
+          - config_vlan.py
+          - "{{ inventory_hostname }}"
+          - "{{ ansible_user }}"
+          - "{{ ansible_ssh_pass }}"
+          - "{{ ansible_port }}"
+          - "1300"
+          - "Red_Gestion"
