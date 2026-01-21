@@ -1,8 +1,18 @@
 ---
-- name: Crear VLAN en Cisco SG350 vía Netmiko
+- name: Crear VLAN en Cisco SG350 vía Netmiko desde AWX
   hosts: all
   gather_facts: no
 
   tasks:
-    - name: Ejecutar script crear_vlan.py
-      script: crear_vlan.py {{ vlan_id }} {{ nombre_vlan }}
+    - name: Ejecutar script Python en el controlador (local)
+      delegate_to: localhost
+      local_action:
+        module: script
+        chdir: "{{ playbook_dir }}"
+        args:
+          _raw_params: "crear_vlan.py {{ vlan_id }} {{ nombre_vlan }}"
+      environment:
+        ANSIBLE_HOST: "{{ inventory_hostname }}"
+        ANSIBLE_NET_USERNAME: "{{ ansible_user }}"
+        ANSIBLE_NET_PASSWORD: "{{ ansible_password }}"
+        ANSIBLE_NET_PORT: "{{ ansible_port | default('11110') }}"
