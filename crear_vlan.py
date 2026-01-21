@@ -1,45 +1,39 @@
 #!/usr/bin/env python3
 
 import sys
-import os
 from netmiko import ConnectHandler
+import os
 
-# Parámetros pasados por AWX
-host = os.environ.get("ANSIBLE_HOST")
-username = os.environ.get("ANSIBLE_NET_USERNAME")
-password = os.environ.get("ANSIBLE_NET_PASSWORD")
-port = os.environ.get("ANSIBLE_NET_PORT", 11110)  # Default a 22 si no se especifica
-
-# Argumentos desde el Playbook
-if len(sys.argv) != 3:
-    print("Uso: crear_vlan.py <vlan_id> <nombre_vlan>")
-    sys.exit(1)
-
+# Argumentos desde el playbook
 vlan_id = sys.argv[1]
-nombre_vlan = sys.argv[2]
+vlan_name = sys.argv[2]
+
+# AWX pasa automáticamente estas variables de entorno si usas credenciales SSH
+host_ip = os.environ.get("ANSIBLE_HOST")
+username = os.environ.get("ANSIBLE_NET_USERNAME") or os.environ.get("ANSIBLE_USER")
+password = os.environ.get("ANSIBLE_NET_PASSWORD") or os.environ.get("ANSIBLE_PASSWORD")
 
 device = {
-    "device_type": "cisco_s300",
-    "host": host,
+    "device_type": "cisco_s300",  # Para SG350
+    "host": host_ip,
     "username": username,
     "password": password,
-    "port": int(port),
+    "port": 11110,  # Puerto SSH personalizado
 }
 
-try:
-    net_connect = ConnectHandler(**device)
-    commands = [
-        "conf t",
-        f"interface vlan {vlan_id}",
-        f"name {nombre_vlan}",
-        "exit",
-        "do wr",
-        "y",
-    ]
-    output = net_connect.send_config_set(commands)
-    print(output)
-    net_connect.disconnect()
+commands = [
+    f"vlan {vlan_id}",
+    f"name {vlan_name}",
+    "exit",
+    "do wr mem"
+]
 
+try:
+    connection = ConnectHandler(**device)
+    output = connection.send_config_set(commands)
+    print(output)
+    connection.disconnect()
 except Exception as e:
-    print(f"Error: {e}")
+    print(f"ERROR: {str(e)}")
     sys.exit(1)
+
