@@ -1,18 +1,22 @@
 ---
-- name: Crear VLAN vía expect
-  ansible.builtin.expect:
-    command: ssh -p 11110 {{ ansible_user }}@{{ inventory_hostname }}
-    responses:
-      '(?i)password:': '{{ ansible_password }}'
-      '^>': 'enable'
-      '^#': 'configure terminal'
-      '\(config\)#': 'interface vlan {{ vlan_id }}'
-      '\(config-if\)#': 'name {{ vlan_name }}'
-      '\(config-if\)#_1': 'exit'
-      '\(config\)#_2': 'do write memory'
-      '\(Y/N\)': 'Y'
-      '\(config\)#_3': 'exit'
-      '^#_4': 'exit'
-    timeout: 50
-    echo: yes
-  no_log: false
+- name: Crear VLAN en Cisco SG350 usando SSH + expect
+  hosts: all
+  gather_facts: no
+  tasks:
+    - name: Crear VLAN vía expect
+      ansible.builtin.expect:
+        command: ssh -p 11110 {{ ansible_user }}@{{ inventory_hostname }}
+        responses:
+          '(?i)password:': '{{ ansible_password }}'
+          '^>': 'enable'
+          '^#': 'configure terminal'
+          '\(config\)#': 'interface vlan {{ vlan_id }}'
+          '\(config-if\)#_1': 'name {{ vlan_name }}'
+          '\(config-if\)#_2': 'exit'
+          '\(config\)#_3': 'do write memory'
+          '\(Y/N\)': 'Y'
+          '\(config\)#_4': 'exit'
+          '^#_5': 'exit'
+        timeout: 50
+        echo: yes
+      no_log: false
