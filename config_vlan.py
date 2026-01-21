@@ -1,57 +1,44 @@
-#!/usr/bin/env python3
-
-import sys
 from netmiko import ConnectHandler
+import sys
 
-host = sys.argv[1]
-username = sys.argv[2]
-password = sys.argv[3]
-port = sys.argv[4]
-vlan_id = sys.argv[5]
-vlan_name = sys.argv[6]
+def main():
+    if len(sys.argv) != 8:
+        print("❌ Uso incorrecto: python3 config_vlan.py <host> <user> <pass> <port> <vlan_id> <vlan_name>")
+        sys.exit(1)
 
-print("===== DEBUG START =====")
-print(f"Parameters received: host={host}, user={username}, port={port}, vlan_id={vlan_id}, vlan_name={vlan_name}")
+    _, host, user, password, port, vlan_id, vlan_name = sys.argv
 
-device = {
-    "device_type": "cisco_s300",
-    "host": host,
-    "username": username,
-    "password": password,
-    "port": int(port),
-}
+    device = {
+        "device_type": "cisco_s300",
+        "host": host,
+        "username": user,
+        "password": password,
+        "port": port
+    }
 
-print("Device config object:")
-print(device)
+    print(f"🔐 Conectando a {host}:{port}...")
 
-try:
-    print("Attempting to connect to device...")
-    net_connect = ConnectHandler(**device)
-    print("Connected successfully!")
+    try:
+        net_connect = ConnectHandler(**device)
+        print("✅ Conexión exitosa.")
 
-    print("Sending configuration commands:")
-    commands = [
-        "conf t",
-        f"vlan {vlan_id}",
-        f"name {vlan_name}",
-        "exit",
-        "exit",
-        "write memory"
-    ]
-    print(commands)
+        # Comandos para crear la VLAN
+        commands = [
+            "vlan database",
+            f"vlan {vlan_id} name {vlan_name}",
+            "exit"
+        ]
+        print(f"⚙️ Configurando VLAN {vlan_id} con nombre '{vlan_name}'...")
+        output = net_connect.send_config_set(commands)
+        print("📤 Resultado:")
+        print(output)
 
-    output = net_connect.send_config_set(commands)
-    print("----- Command output -----")
-    print(output)
-    print("--------------------------")
+        net_connect.disconnect()
+        print("🔒 Sesión cerrada correctamente.")
 
-    net_connect.disconnect()
-    print("Disconnected from device.")
-    print("===== DEBUG END SUCCESS =====")
-except Exception as e:
-    print("!!!!! EXCEPTION OCCURRED !!!!!")
-    import traceback
-    traceback.print_exc()
-    print("Error:", str(e))
-    print("===== DEBUG END FAILURE =====")
-    sys.exit(1)
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
