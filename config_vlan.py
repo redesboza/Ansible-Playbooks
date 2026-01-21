@@ -3,16 +3,22 @@
 import pexpect
 import sys
 
-host = sys.argv[1]
-user = sys.argv[2]
-password = sys.argv[3]
-port = sys.argv[4]
-vlan_id = sys.argv[5]
+if len(sys.argv) != 7:
+    print("❌ Uso incorrecto:")
+    print("python3 config_vlan.py <host> <user> <password> <port> <vlan_id> <vlan_name>")
+    sys.exit(1)
+
+host      = sys.argv[1]
+user      = sys.argv[2]
+password  = sys.argv[3]
+port      = sys.argv[4]
+vlan_id   = sys.argv[5]
 vlan_name = sys.argv[6]
 
-print(f"🔧 Configuración VLAN: ID={vlan_id}, Nombre={vlan_name}")
+print(f"🔐 Conectando a {host}:{port} como {user}...")
+
 ssh_cmd = f"ssh -o StrictHostKeyChecking=no -p {port} {user}@{host}"
-child = pexpect.spawn(ssh_cmd, timeout=30)
+child = pexpect.spawn(ssh_cmd, timeout=20)
 
 try:
     while True:
@@ -21,40 +27,36 @@ try:
             "User Name:",
             "Password:",
             "#",
-            "Do you want to change it now (Y/N)",
+            ">",              # algunos SG350 dan prompt >
             pexpect.TIMEOUT,
             pexpect.EOF
         ])
 
-        if i == 0:
-            child.sendline(user)
-        elif i == 1:
+        if i == 0 or i == 1:
             child.sendline(user)
         elif i == 2:
             child.sendline(password)
-        elif i == 3:
-            print("✅ Conexión SSH establecida, configurando VLAN...")
+        elif i == 3 or i == 4:
+            print("✅ Conectado. Iniciando configuración de VLAN...")
             break
-        elif i == 4:
-            child.sendline("N")
         else:
-            print("❌ Error: No se pudo establecer la conexión.")
+            print("❌ No se pudo establecer sesión SSH.")
             sys.exit(1)
 
-    # Enviar comandos para configurar la VLAN
+    # Enviar comandos de configuración
     child.sendline("configure terminal")
-    child.expect("#")
+    child.expect(["#", ">"])
 
     child.sendline(f"vlan {vlan_id}")
-    child.expect("#")
+    child.expect(["#", ">"])
 
     child.sendline(f"name {vlan_name}")
-    child.expect("#")
+    child.expect(["#", ">"])
 
     child.sendline("end")
-    child.expect("#")
+    child.expect(["#", ">"])
 
-    print(f"✅ VLAN {vlan_id} - '{vlan_name}' configurada correctamente.")
+    print(f"✅ VLAN {vlan_id} ({vlan_name}) configurada con éxito.")
 
     child.sendline("exit")
     child.close()
@@ -62,4 +64,3 @@ try:
 except Exception as e:
     print(f"❌ Error durante configuración: {e}")
     sys.exit(1)
-
