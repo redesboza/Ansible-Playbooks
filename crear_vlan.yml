@@ -12,14 +12,15 @@
       ansible.builtin.expect:
         command: ssh -p 11110 {{ ansible_user }}@{{ inventory_hostname }}
         responses:
-          (?i)password: "{{ ansible_password }}"
-          "^>": "enable"
-          "^#": "configure terminal"
-          "\(config\)#": "interface vlan {{ vlan_id }}"
-          "\(config-if\)#": "name {{ vlan_name }}"
-          "\(config-if\)#": "exit"
-          "\(config\)#": "do write memory"
-          "\(Y/N\)": "Y"
-          "^#": "exit"
+          '(?i)password:': '{{ ansible_password }}'
+          '^>': 'enable'
+          '^#': 'configure terminal'
+          '\(config\)#': 'interface vlan {{ vlan_id }}'
+          '\(config-if\)#': 'name {{ vlan_name }}'
+          '\(config-if\)#': 'exit'
+          '\(config\)#': 'do write memory'
+          '\(Y/N\)': 'Y'
+          '^#': 'exit'
+        timeout: 40
+        echo: yes
       no_log: false
-      timeout: 40
