@@ -2,8 +2,10 @@ from netmiko import ConnectHandler
 import sys
 
 def main():
-    if len(sys.argv) != 8:
-        print("❌ Uso incorrecto: python3 config_vlan.py <host> <user> <pass> <port> <vlan_id> <vlan_name>")
+    # sys.argv = [script, host, user, pass, port, vlan_id, vlan_name]
+    if len(sys.argv) != 7:
+        print("❌ Uso incorrecto:")
+        print("python3 config_vlan.py <host> <user> <pass> <port> <vlan_id> <vlan_name>")
         sys.exit(1)
 
     _, host, user, password, port, vlan_id, vlan_name = sys.argv
@@ -13,31 +15,36 @@ def main():
         "host": host,
         "username": user,
         "password": password,
-        "port": port
+        "port": int(port),
+        "fast_cli": False
     }
 
     print(f"🔐 Conectando a {host}:{port}...")
 
     try:
         net_connect = ConnectHandler(**device)
-        print("✅ Conexión exitosa.")
+        print("✅ Autenticación OK")
 
-        # Comandos para crear la VLAN
+        # Entrar a modo configuración y crear VLAN
         commands = [
-            "vlan database",
-            f"vlan {vlan_id} name {vlan_name}",
+            f"vlan {vlan_id}",
+            f"name {vlan_name}",
             "exit"
         ]
-        print(f"⚙️ Configurando VLAN {vlan_id} con nombre '{vlan_name}'...")
+
+        print(f"⚙️ Creando VLAN {vlan_id} ({vlan_name})")
         output = net_connect.send_config_set(commands)
-        print("📤 Resultado:")
+        print("📤 Salida del switch:")
         print(output)
 
+        net_connect.save_config()
+        print("💾 Configuración guardada")
+
         net_connect.disconnect()
-        print("🔒 Sesión cerrada correctamente.")
+        print("🔒 Sesión cerrada correctamente")
 
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        print(f"❌ Error durante la configuración: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
