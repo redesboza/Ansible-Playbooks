@@ -18,6 +18,7 @@ device = {
     'password': password,
     'port': port,
 }
+print("DEBUG DEVICE:", device)
 
 net_connect = ConnectHandler(**device)
 
