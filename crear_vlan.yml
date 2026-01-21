@@ -1,3 +1,4 @@
+---
 - name: Crear VLAN vía expect
   ansible.builtin.expect:
     command: ssh -p 11110 {{ ansible_user }}@{{ inventory_hostname }}
