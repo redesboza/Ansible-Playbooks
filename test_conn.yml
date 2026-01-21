@@ -1,13 +1,14 @@
 ---
-- name: Paso 1 - Probar conexión SSH con Netmiko
+- name: Paso 1 - Probar conexión SSH a switch con Netmiko
   hosts: all
   gather_facts: no
 
   tasks:
-    - name: Ejecutar script de prueba de conexión
+    - name: Ejecutar test de conexión via Netmiko
       delegate_to: localhost
       command: >
-        python3 test_conn.py {{ ansible_host }}
+        python3 test_conn.py
+        {{ ansible_host }}
         {{ ansible_user }}
         {{ ansible_password }}
         {{ ansible_port | default('11110') }}
