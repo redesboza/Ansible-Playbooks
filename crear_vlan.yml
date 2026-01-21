@@ -1,24 +1,23 @@
 ---
-- name: Crear VLAN en Cisco SG350 (método net_connect)
+- name: Crear VLAN en Cisco SG350 usando SSH puro
   hosts: all
   gather_facts: no
 
   vars:
+    ssh_port: 11110
     vlan_id: 1200
     vlan_name: "Prueba1"
 
   tasks:
-    - name: Conectar y ejecutar comandos de configuración
-      ansible.netcommon.net_connect:
-        connection: network_cli
-        platform: cisco_smb
-        host: "{{ ansible_host }}"
-        username: "{{ ansible_user }}"
-        password: "{{ ansible_password }}"
-        port: "{{ ansible_port | default(22) }}"
-        commands:
-          - configure terminal
-          - vlan {{ vlan_id }}
-          - name {{ vlan_name }}
-          - exit
-          - write memory
+    - name: Crear VLAN usando ssh y comandos individuales
+      ansible.builtin.shell: |
+        ssh -p {{ ssh_port }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} << EOF
+        configure terminal
+        vlan {{ vlan_id }}
+        name {{ vlan_name }}
+        exit
+        write memory
+        exit
+        EOF
+      args:
+        executable: /bin/bash
