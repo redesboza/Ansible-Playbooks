@@ -2,21 +2,26 @@
 - name: Crear VLAN en Cisco SG350 usando SSH + expect
   hosts: all
   gather_facts: no
+
   vars:
-    vlan_id: 1100           # Puedes sobrescribir esto desde AWX en "Variables"
-    vlan_name: XYZ          # Lo mismo con este
+    vlan_id: 1100
+    vlan_name: XYZ
 
   tasks:
-    - name: Crear VLAN vía expect
+    - name: Crear VLAN correctamente (sin claves duplicadas)
       ansible.builtin.expect:
         command: ssh -p 11110 {{ inventory_hostname }}
         responses:
-          '^.*#': 'conf t'
-          '^.*\\(config\\)#': "int vlan {{ vlan_id }}"
-          '^.*\\(config-if\\)#': "name {{ vlan_name }}"
-          '^.*\\(config-if\\)#': "exit"
-          '^.*\\(config\\)#': "do wr m"
-          'Y/N': 'Y'
-        timeout: 30
+          '(?i)password:': '{{ ansible_password }}'
+          '^.*>': |
+            enable
+          '^.*#': |
+            configure terminal
+            interface vlan {{ vlan_id }}
+            name {{ vlan_name }}
+            exit
+            do write memory
+          '\(Y/N\)': 'Y'
+        timeout: 60
         echo: yes
       no_log: false
