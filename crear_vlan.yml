@@ -9,14 +9,15 @@
     vlan_name: "Prueba1"
 
   tasks:
-    - name: Crear VLAN usando ssh y comandos individuales
+    - name: Crear VLAN usando SSH y comandos encadenados
       ansible.builtin.shell: |
-        ssh -p {{ ssh_port }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} << EOF
+        ssh -p {{ ssh_port }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} /bin/bash << EOF
+        enable
         configure terminal
         vlan {{ vlan_id }}
         name {{ vlan_name }}
         exit
-        write memory
+        do write memory
         exit
         EOF
       args:
