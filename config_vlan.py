@@ -47,7 +47,7 @@ try:
     child.sendline("configure terminal")
     child.expect(["#", ">"])
 
-    child.sendline(f"vlan {vlan_id}")
+    child.sendline(f"int vlan {vlan_id}")
     child.expect(["#", ">"])
 
     child.sendline(f"name {vlan_name}")
