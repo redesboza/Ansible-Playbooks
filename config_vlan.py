@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import sys
 from netmiko import ConnectHandler
 
@@ -9,32 +11,36 @@ vlan_id = sys.argv[5]
 vlan_name = sys.argv[6]
 
 device = {
-    'device_type': 'cisco_s300',
-    'host': host,
-    'username': username,
-    'password': password,
-    'port': port,
+    "device_type": "cisco_s300",
+    "host": host,
+    "username": username,
+    "password": password,
+    "port": int(port),
 }
 
-print("🔧 Conectando al switch para configurar VLAN...")
+print(f"Conectando a {host}:{port}...")
 
 try:
     net_connect = ConnectHandler(**device)
+
+    # Entrar a modo global
     net_connect.enable()
 
     commands = [
-        "vlan database",
+        "conf t",
         f"vlan {vlan_id}",
-        "exit",
-        f"interface vlan {vlan_id}",
         f"name {vlan_name}",
-        "exit"
+        "exit",
+        "exit",
+        "write memory"
     ]
 
     output = net_connect.send_config_set(commands)
-    print("✅ Configuración aplicada:")
-    print(output)
+    print("Salida de configuración:\n", output)
+
     net_connect.disconnect()
+    print("Conexión cerrada.")
 
 except Exception as e:
-    print(f"❌ Error durante la configuración: {e}")
+    print("❌ Error:", e)
+    sys.exit(1)
