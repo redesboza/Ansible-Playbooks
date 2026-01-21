@@ -1,5 +1,5 @@
 ---
-- name: Crear VLAN en Cisco SG350 usando expect
+- name: Crear VLAN en Cisco SG350 (método net_connect)
   hosts: all
   gather_facts: no
 
@@ -8,19 +8,17 @@
     vlan_name: "Prueba1"
 
   tasks:
-    - name: Crear VLAN usando expect
-      ansible.builtin.expect:
-        command: ssh -o HostKeyAlgorithms=+ssh-rsa -o StrictHostKeyChecking=no -p {{ ansible_port }} {{ ansible_user }}@{{ inventory_hostname }}
-        responses:
-          'Password:': "{{ ansible_password }}"
-          '>': "enable"
-          '#': "configure terminal"
-          '(config)#': "vlan {{ vlan_id }}"
-          '(config-vlan)#': "name {{ vlan_name }}"
-          '(config-vlan)#': "exit"
-          '(config)#': "do write memory"
-          '(config)#': "exit"
-          '#': "exit"
-      vars:
-        ansible_password: "{{ lookup('env', 'ANSIBLE_PASSWORD') }}"
-      no_log: false
+    - name: Conectar y ejecutar comandos de configuración
+      ansible.netcommon.net_connect:
+        connection: network_cli
+        platform: cisco_smb
+        host: "{{ ansible_host }}"
+        username: "{{ ansible_user }}"
+        password: "{{ ansible_password }}"
+        port: "{{ ansible_port | default(22) }}"
+        commands:
+          - configure terminal
+          - vlan {{ vlan_id }}
+          - name {{ vlan_name }}
+          - exit
+          - write memory
