@@ -6,8 +6,3 @@
   tasks:
     - name: Ejecutar script crear_vlan.py
       script: crear_vlan.py {{ vlan_id }} {{ nombre_vlan }}
-      environment:
-        ANSIBLE_HOST: "{{ inventory_hostname }}"
-        ANSIBLE_NET_USERNAME: "{{ ansible_user }}"
-        ANSIBLE_NET_PASSWORD: "{{ ansible_password }}"
-        ANSIBLE_NET_PORT: "{{ ansible_port | default('11110') }}"
