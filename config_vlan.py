@@ -1,51 +1,65 @@
-from netmiko import ConnectHandler
+#!/usr/bin/env python3
+
+import pexpect
 import sys
 
-def main():
-    # sys.argv = [script, host, user, pass, port, vlan_id, vlan_name]
-    if len(sys.argv) != 7:
-        print("❌ Uso incorrecto:")
-        print("python3 config_vlan.py <host> <user> <pass> <port> <vlan_id> <vlan_name>")
-        sys.exit(1)
+host = sys.argv[1]
+user = sys.argv[2]
+password = sys.argv[3]
+port = sys.argv[4]
+vlan_id = sys.argv[5]
+vlan_name = sys.argv[6]
 
-    _, host, user, password, port, vlan_id, vlan_name = sys.argv
+print(f"🔧 Configuración VLAN: ID={vlan_id}, Nombre={vlan_name}")
+ssh_cmd = f"ssh -o StrictHostKeyChecking=no -p {port} {user}@{host}"
+child = pexpect.spawn(ssh_cmd, timeout=30)
 
-    device = {
-        "device_type": "cisco_s300",
-        "host": host,
-        "username": user,
-        "password": password,
-        "port": int(port),
-        "fast_cli": False
-    }
+try:
+    while True:
+        i = child.expect([
+            "login as:",
+            "User Name:",
+            "Password:",
+            "#",
+            "Do you want to change it now (Y/N)",
+            pexpect.TIMEOUT,
+            pexpect.EOF
+        ])
 
-    print(f"🔐 Conectando a {host}:{port}...")
+        if i == 0:
+            child.sendline(user)
+        elif i == 1:
+            child.sendline(user)
+        elif i == 2:
+            child.sendline(password)
+        elif i == 3:
+            print("✅ Conexión SSH establecida, configurando VLAN...")
+            break
+        elif i == 4:
+            child.sendline("N")
+        else:
+            print("❌ Error: No se pudo establecer la conexión.")
+            sys.exit(1)
 
-    try:
-        net_connect = ConnectHandler(**device)
-        print("✅ Autenticación OK")
+    # Enviar comandos para configurar la VLAN
+    child.sendline("configure terminal")
+    child.expect("#")
 
-        # Entrar a modo configuración y crear VLAN
-        commands = [
-            f"vlan {vlan_id}",
-            f"name {vlan_name}",
-            "exit"
-        ]
+    child.sendline(f"vlan {vlan_id}")
+    child.expect("#")
 
-        print(f"⚙️ Creando VLAN {vlan_id} ({vlan_name})")
-        output = net_connect.send_config_set(commands)
-        print("📤 Salida del switch:")
-        print(output)
+    child.sendline(f"name {vlan_name}")
+    child.expect("#")
 
-        net_connect.save_config()
-        print("💾 Configuración guardada")
+    child.sendline("end")
+    child.expect("#")
 
-        net_connect.disconnect()
-        print("🔒 Sesión cerrada correctamente")
+    print(f"✅ VLAN {vlan_id} - '{vlan_name}' configurada correctamente.")
 
-    except Exception as e:
-        print(f"❌ Error durante la configuración: {e}")
-        sys.exit(1)
+    child.sendline("exit")
+    child.close()
 
-if __name__ == "__main__":
-    main()
+except Exception as e:
+    print(f"❌ Error durante configuración: {e}")
+    sys.exit(1)
+
