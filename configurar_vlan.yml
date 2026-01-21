@@ -1,0 +1,25 @@
+---
+- name: Paso 2 - Configurar VLAN en switch
+  hosts: all
+  gather_facts: no
+
+  tasks:
+    - name: Verificar conexión SSH con Netmiko
+      delegate_to: localhost
+      command: >
+        python3 test_conn.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_password }}
+        {{ ansible_port | default('11110') }}
+
+    - name: Configurar VLAN en el switch
+      delegate_to: localhost
+      command: >
+        python3 config_vlan.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_password }}
+        {{ ansible_port | default('11110') }}
+        {{ vlan_id }}
+        {{ vlan_name }}
