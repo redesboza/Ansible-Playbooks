@@ -1,29 +1,23 @@
 ---
-- name: Crear VLAN en Cisco SG350 usando SSH puro
+- name: Crear VLAN en Cisco SG350 usando expect
   hosts: all
   gather_facts: no
 
   vars:
-    ssh_port: 11110
-    vlan_id: 1200
-    vlan_name: "Prueba1"
+    vlan_id: 1100
+    vlan_name: "XYZ"
 
   tasks:
-    - name: Crear VLAN usando SSH y comandos encadenados
-      ansible.builtin.shell: |
-        ssh -p {{ ssh_port }} -o StrictHostKeyChecking=no {{ ansible_user }}@{{ inventory_hostname }} << EOF
-        enable
-        configure terminal
-        vlan {{ vlan_id }}
-        name {{ vlan_name }}
-        exit
-        do write memory
-        exit
-        EOF
-      args:
-        executable: /bin/bash
-      register: resultado_vlan
-
-    - name: Mostrar salida de configuración
-      ansible.builtin.debug:
-        var: resultado_vlan.stdout_lines
+    - name: Crear VLAN enviando comandos secuenciales
+      ansible.builtin.expect:
+        command: ssh -p 11110 {{ ansible_user }}@{{ inventory_hostname }}
+        responses:
+          "(?i)password:": "{{ ansible_password }}"
+          ">": "enable"
+          "#": "configure terminal"
+          "\(config\)#": "interface vlan {{ vlan_id }}"
+          "\(config-if\)#": "name {{ vlan_name }}"
+          "\(config-if\)#": "exit"
+          "\(config\)#": "do wr m"
+          "\[Y/N\]": "Y"
+      no_log: false
