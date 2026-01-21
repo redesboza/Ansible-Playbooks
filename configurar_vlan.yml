@@ -5,7 +5,7 @@
 
   vars:
     vlan_id: "1300"
-    vlan_name: "Red_Gestion"
+    vlan_name: "Red_Prueba"
 
   tasks:
     - name: Configurar VLAN con pexpect
