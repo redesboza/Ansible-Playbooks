@@ -1,27 +1,13 @@
 ---
-- name: Crear VLAN en Cisco SG350 usando SSH + expect
+- name: Crear VLAN en Cisco SG350 vía Netmiko
   hosts: all
   gather_facts: no
 
-  vars:
-    vlan_id: 1100
-    vlan_name: XYZ
-
   tasks:
-    - name: Crear VLAN correctamente (sin claves duplicadas)
-      ansible.builtin.expect:
-        command: ssh -p 11110 {{ inventory_hostname }}
-        responses:
-          '(?i)password:': '{{ ansible_password }}'
-          '^.*>': |
-            enable
-          '^.*#': |
-            configure terminal
-            interface vlan {{ vlan_id }}
-            name {{ vlan_name }}
-            exit
-            do write memory
-          '\(Y/N\)': 'Y'
-        timeout: 60
-        echo: yes
-      no_log: false
+    - name: Ejecutar script crear_vlan.py
+      script: crear_vlan.py {{ vlan_id }} {{ nombre_vlan }}
+      environment:
+        ANSIBLE_HOST: "{{ inventory_hostname }}"
+        ANSIBLE_NET_USERNAME: "{{ ansible_user }}"
+        ANSIBLE_NET_PASSWORD: "{{ ansible_password }}"
+        ANSIBLE_NET_PORT: "{{ ansible_port | default('11110') }}"
