@@ -1,31 +1,28 @@
-#!/usr/bin/env python3
-
-import sys
 from netmiko import ConnectHandler
+import sys
 
-# Leer argumentos del playbook
 host = sys.argv[1]
 username = sys.argv[2]
 password = sys.argv[3]
 port = sys.argv[4]
 
 device = {
-    "device_type": "cisco_s300",
-    "host": host,
-    "username": username,
-    "password": password,
-    "port": int(port),
-    "timeout": 10
+    'device_type': 'cisco_s300',
+    'host': host,
+    'username': username,
+    'password': password,
+    'port': port,
 }
 
-print(f"Conectando a {host}:{port} con usuario {username}...")
+print("🔍 DEBUG DEVICE CONFIG:")
+print(device)
 
 try:
+    print(f"Intentando conexión con {host}...")
     net_connect = ConnectHandler(**device)
-    prompt = net_connect.find_prompt()
-    print(f"✅ Conectado correctamente. Prompt: {prompt}")
+    print("✅ Conexión exitosa a", host)
     net_connect.disconnect()
-    print("🔌 Desconectado exitosamente.")
 except Exception as e:
-    print(f"❌ Error de conexión: {e}")
+    print("❌ Error al conectar a", host)
+    print(e)
     sys.exit(1)
