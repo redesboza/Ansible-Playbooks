@@ -3,23 +3,20 @@
   hosts: all
   gather_facts: no
   vars:
-    vlan_id: 1100
-    vlan_name: XYZ
+    vlan_id: 1100           # Puedes sobrescribir esto desde AWX en "Variables"
+    vlan_name: XYZ          # Lo mismo con este
+
   tasks:
     - name: Crear VLAN vía expect
       ansible.builtin.expect:
-        command: ssh -p 11110 {{ ansible_user }}@{{ inventory_hostname }}
+        command: ssh -p 11110 {{ inventory_hostname }}
         responses:
-          '(?i)password:': '{{ ansible_password }}'
-          '^>': 'enable'
-          '^#': 'configure terminal'
-          '\(config\)#': 'interface vlan {{ vlan_id }}'
-          '\(config-if\)#_1': 'name {{ vlan_name }}'
-          '\(config-if\)#_2': 'exit'
-          '\(config\)#_3': 'do write memory'
-          '\(Y/N\)': 'Y'
-          '\(config\)#_4': 'exit'
-          '^#_5': 'exit'
-        timeout: 50
+          '^.*#': 'conf t'
+          '^.*\\(config\\)#': "int vlan {{ vlan_id }}"
+          '^.*\\(config-if\\)#': "name {{ vlan_name }}"
+          '^.*\\(config-if\\)#': "exit"
+          '^.*\\(config\\)#': "do wr m"
+          'Y/N': 'Y'
+        timeout: 30
         echo: yes
       no_log: false
