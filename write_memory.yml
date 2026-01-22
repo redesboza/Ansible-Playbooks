@@ -1,0 +1,14 @@
+---
+- name: Guardar configuración en switch Cisco SG (write memory)
+  hosts: all
+  gather_facts: no
+
+  tasks:
+    - name: Ejecutar write memory con pexpect
+      delegate_to: localhost
+      command: >
+        python3 write_memory.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_ssh_pass }}
+        {{ ansible_port | default('11110') }}
