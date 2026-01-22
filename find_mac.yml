@@ -1,0 +1,18 @@
+---
+- name: Buscar MAC en tabla MAC (Cisco SG)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    mac_address: "00:11:22:33:44:55"   # <- cámbialo en AWX (Extra Vars / Survey)
+
+  tasks:
+    - name: Buscar MAC y mostrar puerto
+      delegate_to: localhost
+      command: >
+        python3 find_mac.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_ssh_pass }}
+        {{ ansible_port | default('11110') }}
+        {{ mac_address }}
