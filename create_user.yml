@@ -1,0 +1,23 @@
+---
+- name: Crear/actualizar usuario local en Cisco SG (CLI)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    # Define estas variables en AWX (Extra Vars o Survey)
+    new_username: "bozza"
+    new_password: "S3guridadG0.2021"
+    new_privilege: "15"
+
+  tasks:
+    - name: Ejecutar creación de usuario con pexpect
+      delegate_to: localhost
+      command: >
+        python3 create_user.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_ssh_pass }}
+        {{ ansible_port | default('11110') }}
+        {{ new_username }}
+        {{ new_password }}
+        {{ new_privilege }}
