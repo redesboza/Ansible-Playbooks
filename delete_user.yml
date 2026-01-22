@@ -1,0 +1,19 @@
+---
+- name: Eliminar usuario local en Cisco SG (CLI)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    # Define esta variable en AWX (Extra Vars o Survey)
+    delete_username: "bozza"
+
+  tasks:
+    - name: Ejecutar eliminación de usuario con pexpect
+      delegate_to: localhost
+      command: >
+        python3 delete_user.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_ssh_pass }}
+        {{ ansible_port | default('11110') }}
+        {{ delete_username }}
