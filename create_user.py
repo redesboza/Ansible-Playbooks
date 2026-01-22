@@ -5,9 +5,9 @@ import sys
 '''
 Cisco SG (SG300/SG350/CBS) - Crear/actualizar usuario local
 
-Mantiene la misma lógica de autenticación de tus scripts:
-- Detecta prompts: 'login as:', 'User Name:', 'Password:'
-- Detecta prompt de equipo: '#' o '>'
+Autenticación robusta:
+- Detecta prompts: 'login as:', 'User Name:', 'Password:', y confirmación de hostkey
+- Detecta prompt del equipo (privilegiado '#', o no-privilegiado '>')
 
 Luego ejecuta:
   configure terminal
@@ -32,63 +32,92 @@ privilege    = sys.argv[7]
 
 print(f"🔐 Conectando a {host}:{port} como {ssh_user}...")
 
-ssh_cmd = f"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {port} {ssh_user}@{host}"
-child = pexpect.spawn(ssh_cmd, timeout=25, encoding="utf-8")
+# -tt fuerza TTY (muchos Cisco/SG lo prefieren para mostrar prompt)
+ssh_cmd = (
+    f"ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+    f"-o PreferredAuthentications=password,keyboard-interactive "
+    f"-p {port} {ssh_user}@{host}"
+)
+child = pexpect.spawn(ssh_cmd, timeout=35, encoding="utf-8")
 
-def expect_prompt():
+def expect_prompt(timeout=35):
     """Espera prompt privilegiado '#' o no-privilegiado '>' y devuelve '#' o '>'"""
+    child.timeout = timeout
     i = child.expect([r"#\s*$", r">\s*$"])
     return "#" if i == 0 else ">"
 
+
 try:
-    # --- Autenticación (misma idea que tu script) ---
+    # --- Autenticación ---
+    # IMPORTANTE: No hacemos expect_prompt() inmediatamente después de haber matcheado el prompt,
+    # porque ese expect ya consumió el prompt. Guardamos cuál fue el prompt detectado.
+    detected_prompt = None
+
     while True:
         i = child.expect([
-            "login as:",
-            "User Name:",
-            "Password:",
+            r"Are you sure you want to continue connecting \(yes/no\)\?",
+            r"login as:",
+            r"User Name:",
+            r"Username:",
+            r"Password:",
             r"#\s*$",
             r">\s*$",
+            r"Press any key to continue",
+            r"--More--",
             pexpect.TIMEOUT,
             pexpect.EOF,
         ])
 
-        if i == 0 or i == 1:
+        if i == 0:
+            child.sendline("yes")
+        elif i in (1, 2, 3):
             child.sendline(ssh_user)
-        elif i == 2:
+        elif i == 4:
             child.sendline(ssh_password)
-        elif i == 3 or i == 4:
+        elif i == 5:
+            detected_prompt = "#"
             break
+        elif i == 6:
+            detected_prompt = ">"
+            break
+        elif i == 7:
+            child.sendline("")
+        elif i == 8:
+            child.send(" ")  # espacio para avanzar paginación
         else:
-            print("❌ No se pudo establecer sesión SSH (timeout/EOF).")
+            print("❌ No se pudo establecer sesión SSH (timeout/EOF).\n" + child.before[-400:])
             sys.exit(1)
 
-    prompt = expect_prompt()
+    prompt = detected_prompt
+
+    # Enviar ENTER para refrescar el prompt (evita quedar en medio de mensajes syslog/banners)
+    child.sendline("")
+    prompt = expect_prompt(timeout=35)
 
     # Si entra a modo '>' (no privilegiado), intenta enable
     if prompt == ">":
         child.sendline("enable")
         k = child.expect([r"Password:", r"#\s*$", r">\s*$", pexpect.TIMEOUT, pexpect.EOF])
         if k == 0:
-            # En muchos casos, la clave enable es la misma o ya está configurada.
             child.sendline(ssh_password)
             child.expect([r"#\s*$", r">\s*$", pexpect.TIMEOUT, pexpect.EOF])
-        prompt = expect_prompt()
+        # refresca prompt
+        child.sendline("")
+        prompt = expect_prompt(timeout=35)
 
     if prompt != "#":
-        print("⚠️ No quedé en modo privilegiado '#'. Revisa si falta enable password o privilegios.")
+        print("⚠️ No quedé en modo privilegiado '#'. Revisa enable password o privilegios del usuario SSH.")
 
     print("✅ Conectado. Entrando a configuración global...")
 
     child.sendline("configure terminal")
-    # SG suele mostrar (config)# o similar
     child.expect([r"\(config[^\)]*\)#", r"#\s*$", r">\s*$", pexpect.TIMEOUT, pexpect.EOF])
 
-    cmd = f"username {new_user} password {new_pass} privilege {privilege}"
+    cmd = f"username {new_user} privilege {privilege} password {new_pass}"
     print(f"👤 Creando/actualizando usuario: {new_user} (priv {privilege})")
     child.sendline(cmd)
 
-    # Espera volver a (config)# o prompt (por si el equipo responde con algo)
+    # Espera volver a config prompt o prompt general
     child.expect([r"\(config[^\)]*\)#", r"#\s*$", r">\s*$", pexpect.TIMEOUT, pexpect.EOF])
 
     # Salir a privilegiado
@@ -96,7 +125,6 @@ try:
     child.expect([r"#\s*$", r">\s*$", pexpect.TIMEOUT, pexpect.EOF])
 
     print("✅ Usuario configurado correctamente ✅")
-
     child.sendline("exit")
     child.close()
 
@@ -107,3 +135,4 @@ except Exception as e:
     except Exception:
         pass
     sys.exit(1)
+
