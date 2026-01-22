@@ -84,7 +84,7 @@ try:
     # SG suele mostrar (config)# o similar
     child.expect([r"\(config[^\)]*\)#", r"#\s*$", r">\s*$", pexpect.TIMEOUT, pexpect.EOF])
 
-    cmd = f"username {new_user} privilege {privilege} password {new_pass}"
+    cmd = f"username {new_user} password {new_pass} privilege {privilege}"
     print(f"👤 Creando/actualizando usuario: {new_user} (priv {privilege})")
     child.sendline(cmd)
 
