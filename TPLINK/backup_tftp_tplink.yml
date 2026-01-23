@@ -1,0 +1,21 @@
+---
+- name: Backup startup-config a TFTP (TP-Link)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    tftp_server: "192.168.57.11"
+    # Une nombre + IP como pediste:
+    backup_basename: "{{ inventory_hostname }}_{{ ansible_host }}"
+
+  tasks:
+    - name: Copiar startup-config al servidor TFTP (TP-Link)
+      delegate_to: localhost
+      command: >
+        python3 backup_tftp_tplink.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_ssh_pass }}
+        {{ ansible_port | default('11110') }}
+        {{ tftp_server }}
+        {{ backup_basename }}
