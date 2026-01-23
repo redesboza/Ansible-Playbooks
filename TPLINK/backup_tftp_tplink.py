@@ -44,7 +44,8 @@ except Exception as e:
 print(f"🔐 Conectando por SSH v2 a {host}:{port} como {ssh_user}...")
 print(f"📦 Backup startup-config a TFTP: {tftp_server}  archivo: {filename}")
 
-# Fuerza compatibilidad legacy (ssh-rsa + dh sha1) pero sigue siendo SSHv2
+# ✅ SSH v2 (por defecto). Habilitamos hostkey ssh-rsa + KEX sha1 para compatibilidad con TP-Link antiguos.
+# ❗ No usamos PubkeyAcceptedAlgorithms porque tu OpenSSH (EE) no lo soporta.
 ssh_cmd = (
     f"ssh -tt "
     f"-o StrictHostKeyChecking=no "
@@ -52,7 +53,6 @@ ssh_cmd = (
     f"-o PreferredAuthentications=password,keyboard-interactive "
     f"-o PubkeyAuthentication=no "
     f"-o HostKeyAlgorithms=+ssh-rsa "
-    f"-o PubkeyAcceptedAlgorithms=+ssh-rsa "
     f"-o KexAlgorithms=+diffie-hellman-group14-sha1,+diffie-hellman-group1-sha1 "
     f"-p {port} {ssh_user}@{host}"
 )
@@ -66,7 +66,7 @@ def expect_prompt(timeout=25):
     return child.expect(PROMPT_PATTERNS)
 
 def is_privileged(idx: int) -> bool:
-    return idx == 0
+    return idx == 0  # '#'
 
 try:
     # ---- LOGIN / HANDSHAKE ----
@@ -105,7 +105,7 @@ try:
             sys.exit(1)
         elif i in (7, 8, 9, 10, 11):
             print("❌ Fallo de red/SSH (refused/no route/timeout/closed/resolve). Detalle:")
-            print(clean(child.before + child.after))
+            print(clean(child.before + (child.after or "")))
             sys.exit(1)
         elif i == 12:
             child.send(" ")
