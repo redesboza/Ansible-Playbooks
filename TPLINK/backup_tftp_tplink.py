@@ -8,10 +8,6 @@ from datetime import datetime
 """
 TP-Link (JetStream/Omada) - Backup startup-config a TFTP
 
-Comando objetivo:
-  (modo privilegiado)
-  copy startup-config tftp ip-address <TFTP_IP> filename <HOST>_<IP>_<TS>.cfg
-
 Uso:
   python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>
 """
@@ -47,9 +43,7 @@ except Exception as e:
 print(f"🔐 Conectando por SSH v2 a {host}:{port} como {ssh_user}...")
 print(f"📦 Backup startup-config a TFTP: {tftp_server}  archivo: {filename}")
 
-# ✅ KEX correcto según oferta del switch:
-# Their offer: diffie-hellman-group1-sha1,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512
-# Elegimos group14-sha256 (mejor balance seguridad/compatibilidad).
+# KEX correcto según lo que ofrece el switch
 ssh_cmd = (
     f"ssh -tt "
     f"-o StrictHostKeyChecking=no "
@@ -61,7 +55,7 @@ ssh_cmd = (
     f"-p {port} {ssh_user}@{host}"
 )
 
-child = pexpect.spawn(ssh_cmd, timeout=30, encoding="utf-8")
+child = pexpect.spawn(ssh_cmd, timeout=35, encoding="utf-8")
 
 PROMPT_PATTERNS = [r"#\s*$", r">\s*$", r"\]\s*$"]  # '#', '>', ']' (TP-Link)
 
@@ -81,7 +75,8 @@ try:
             r"User Name:",
             r"Username:",
             r"User:",
-            r"Password:",
+            r"[Pp]assword:\s*$",                       # Password:
+            r".*'s password:\s*$",                     # ansible@ip's password:
             r"Permission denied",
             r"Unable to negotiate.*no matching key exchange method found",
             r"no matching host key type found",
@@ -105,28 +100,27 @@ try:
             child.sendline("yes")
         elif i in (1, 2, 3, 4):
             child.sendline(ssh_user)
-        elif i == 5:
+        elif i in (5, 6):
             child.sendline(ssh_password)
-        elif i == 6:
+        elif i == 7:
             print("❌ Permission denied (usuario/clave incorrectos o AAA).")
             print(clean(child.before))
             sys.exit(1)
-        elif i in (7, 8, 9, 10):
+        elif i in (8, 9, 10, 11):
             print("❌ Fallo de negociación SSH. Detalle:")
             print(clean(child.before + (child.after or "")))
-            print("👉 Si es hostkey/cipher/MAC, ajustamos opciones SSH y listo.")
             sys.exit(1)
-        elif i in (11, 12, 13, 14, 15):
+        elif i in (12, 13, 14, 15, 16):
             print("❌ Fallo de red/SSH. Detalle:")
             print(clean(child.before + (child.after or "")))
             sys.exit(1)
-        elif i == 16:
-            child.send(" ")
         elif i == 17:
+            child.send(" ")
+        elif i == 18:
             child.sendline("")
-        elif i in (18, 19, 20):
+        elif i in (19, 20, 21):
             break
-        elif i == 21:  # EOF
+        elif i == 22:
             print("❌ El proceso SSH terminó (EOF) antes de mostrar prompt.")
             print("📌 Salida del ssh:")
             print(clean(child.before))
@@ -143,8 +137,8 @@ try:
     # ---- ENABLE (si aplica) ----
     if not is_privileged(pidx):
         child.sendline("enable")
-        k = child.expect([r"Password:", r"#\s*$", r">\s*$", r"\]\s*$", pexpect.TIMEOUT, pexpect.EOF], timeout=12)
-        if k == 0:
+        k = child.expect([r"[Pp]assword:\s*$", r".*'s password:\s*$", r"#\s*$", r">\s*$", r"\]\s*$", pexpect.TIMEOUT, pexpect.EOF], timeout=12)
+        if k in (0, 1):
             child.sendline(ssh_password)
             child.expect([r"#\s*$", r">\s*$", r"\]\s*$", pexpect.TIMEOUT, pexpect.EOF], timeout=12)
         child.sendline("")
@@ -207,5 +201,5 @@ except Exception as e:
     try:
         child.close(force=True)
     except Exception:
-        child.close(force=True)
+        pass
     sys.exit(1)
