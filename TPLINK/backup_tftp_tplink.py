@@ -5,13 +5,6 @@ import re
 import socket
 from datetime import datetime
 
-"""
-TP-Link (JetStream/Omada) - Backup startup-config a TFTP
-
-Uso:
-  python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>
-"""
-
 if len(sys.argv) != 7:
     print("❌ Uso: python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>")
     sys.exit(1)
@@ -38,28 +31,28 @@ try:
     print("✅ Puerto accesible desde el Execution Environment.")
 except Exception as e:
     print(f"❌ No puedo abrir TCP a {host}:{port} desde AWX/EE. Causa: {e}")
-    print("👉 Esto confirma ACL/ruta/firewall/NAT o que el servicio no escucha en ese puerto desde esta red.")
     sys.exit(1)
 
 print(f"🔐 Conectando por SSH v2 a {host}:{port} como {ssh_user}...")
 print(f"📦 Backup startup-config a TFTP: {tftp_server}  archivo: {filename}")
 
-# ✅ SSH v2 (por defecto). Habilitamos hostkey ssh-rsa + KEX sha1 para compatibilidad con TP-Link antiguos.
-# ❗ No usamos PubkeyAcceptedAlgorithms porque tu OpenSSH (EE) no lo soporta.
+# IMPORTANTE:
+# - Tu OpenSSH NO soporta el formato con "+" en KexAlgorithms.
+# - Usamos lista directa (sin "+") y evitamos group1.
 ssh_cmd = (
     f"ssh -tt "
     f"-o StrictHostKeyChecking=no "
     f"-o UserKnownHostsFile=/dev/null "
     f"-o PreferredAuthentications=password,keyboard-interactive "
     f"-o PubkeyAuthentication=no "
-    f"-o HostKeyAlgorithms=+ssh-rsa "
-    f"-o KexAlgorithms=+diffie-hellman-group14-sha1,+diffie-hellman-group1-sha1 "
+    f"-o HostKeyAlgorithms=ssh-rsa "
+    f"-o KexAlgorithms=diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1 "
     f"-p {port} {ssh_user}@{host}"
 )
 
 child = pexpect.spawn(ssh_cmd, timeout=25, encoding="utf-8")
 
-PROMPT_PATTERNS = [r"#\s*$", r">\s*$", r"\]\s*$"]  # '#', '>', ']' (TP-Link)
+PROMPT_PATTERNS = [r"#\s*$", r">\s*$", r"\]\s*$"]
 
 def expect_prompt(timeout=25):
     child.timeout = timeout
@@ -69,7 +62,7 @@ def is_privileged(idx: int) -> bool:
     return idx == 0  # '#'
 
 try:
-    # ---- LOGIN / HANDSHAKE ----
+    # ---- LOGIN ----
     while True:
         i = child.expect([
             r"Are you sure you want to continue connecting \(yes/no\)\?",
@@ -84,6 +77,8 @@ try:
             r"Connection timed out",
             r"Connection closed",
             r"Could not resolve hostname",
+            r"Bad SSH2 KexAlgorithms",
+            r"Unsupported KEX algorithm",
             r"--More--",
             r"Press any key to continue",
             r"#\s*$",
@@ -104,16 +99,21 @@ try:
             print(clean(child.before))
             sys.exit(1)
         elif i in (7, 8, 9, 10, 11):
-            print("❌ Fallo de red/SSH (refused/no route/timeout/closed/resolve). Detalle:")
+            print("❌ Fallo de red/SSH. Detalle:")
             print(clean(child.before + (child.after or "")))
             sys.exit(1)
-        elif i == 12:
+        elif i in (12, 13):
+            print("❌ Tu cliente SSH NO acepta estos KexAlgorithms. Detalle:")
+            print(clean(child.before + (child.after or "")))
+            print("👉 Solución: quitar KexAlgorithms del comando, o actualizar OpenSSH en el EE.")
+            sys.exit(1)
+        elif i == 14:
             child.send(" ")
-        elif i == 13:
+        elif i == 15:
             child.sendline("")
-        elif i in (14, 15, 16):
+        elif i in (16, 17, 18):
             break
-        elif i == 17:  # EOF
+        elif i == 19:  # EOF
             print("❌ El proceso SSH terminó (EOF) antes de mostrar prompt.")
             print("📌 Salida del ssh:")
             print(clean(child.before))
@@ -123,7 +123,7 @@ try:
             print(clean(child.before))
             sys.exit(1)
 
-    # refrescar prompt por banners/logs
+    # refrescar prompt
     child.sendline("")
     pidx = expect_prompt(timeout=20)
 
@@ -136,9 +136,6 @@ try:
             child.expect([r"#\s*$", r">\s*$", r"\]\s*$", pexpect.TIMEOUT, pexpect.EOF], timeout=10)
         child.sendline("")
         pidx = expect_prompt(timeout=10)
-
-    if not is_privileged(pidx):
-        print("⚠️ No quedé en modo privilegiado (#). Igual intentaré el copy, pero puede fallar por permisos.")
 
     # paginación off (si existe)
     child.sendline("terminal length 0")
@@ -180,7 +177,6 @@ try:
             print(clean(child.before))
             sys.exit(1)
         else:
-            # TIMEOUT: seguir esperando
             continue
     else:
         print("⚠️ No confirmé fin del copy (no volvió al prompt). Revisa el servidor TFTP y conectividad.")
