@@ -1,18 +1,12 @@
 #!/usr/bin/env python3
+import pexpect
 import sys
-import socket
-import time
 import re
+import socket
 from datetime import datetime
 
-import paramiko
-
 """
-TP-Link (JetStream/Omada) - Backup startup-config a TFTP vía Paramiko
-(no depende de /usr/bin/ssh del EE)
-
-Uso:
-  python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>
+TP-Link - Backup startup-config a TFTP (con timeout de progreso)
 """
 
 if len(sys.argv) != 7:
@@ -34,182 +28,159 @@ def clean(s: str) -> str:
         return ""
     return re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", s)
 
-def tcp_precheck(ip, p, timeout=5):
+def tcp_ok(ip, p):
     try:
-        sock = socket.create_connection((ip, p), timeout=timeout)
-        sock.close()
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-def read_until(chan, patterns, timeout=20):
-    """
-    Lee del canal hasta que aparezca alguno de los regex en patterns o timeout.
-    Retorna: (matched_index o -1, buffer)
-    """
-    buf = ""
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        time.sleep(0.2)
-        while chan.recv_ready():
-            buf += chan.recv(65535).decode("utf-8", errors="ignore")
-
-        for idx, pat in enumerate(patterns):
-            if re.search(pat, buf, re.M | re.I):
-                return idx, buf
-    return -1, buf
-
-def send_and_read(chan, cmd, wait=0.2, reads=10):
-    chan.send(cmd + "\n")
-    buf = ""
-    for _ in range(reads):
-        time.sleep(wait)
-        while chan.recv_ready():
-            buf += chan.recv(65535).decode("utf-8", errors="ignore")
-    return buf
-
-# Prompts comunes
-PROMPT_REGEX = [
-    r"#\s*$",
-    r">\s*$",
-    r"\]\s*$",
-    r"\S+#\s*$",
-    r"\S+>\s*$",
-    r"\S+\]\s*$",
-]
+        s = socket.create_connection((ip, p), timeout=5)
+        s.close()
+        return True
+    except:
+        return False
 
 print(f"🔎 Precheck TCP {host}:{port} ...")
-ok, err = tcp_precheck(host, port)
-if not ok:
-    print(f"❌ No puedo abrir TCP a {host}:{port} desde AWX/EE. Causa: {err}")
+if not tcp_ok(host, port):
+    print(f"❌ No hay conectividad TCP desde EE hacia {host}:{port}")
     sys.exit(1)
 print("✅ Puerto accesible desde el Execution Environment.")
 
-print(f"🔐 Conectando por SSH v2 (Paramiko) a {host}:{port} como {ssh_user}...")
+print(f"🔐 Conectando a {host}:{port} como {ssh_user} (ssh v2)...")
 print(f"📦 Backup startup-config a TFTP: {tftp_server}  archivo: {filename}")
 
+PROMPTS = [r"#\s*$", r">\s*$", r"\]\s*$", r"\S+#\s*$", r"\S+>\s*$", r"\S+\]\s*$"]
+
+ssh_cmd = (
+    f"ssh -tt "
+    f"-o StrictHostKeyChecking=no "
+    f"-o UserKnownHostsFile=/dev/null "
+    f"-o PreferredAuthentications=password,keyboard-interactive "
+    f"-o PubkeyAuthentication=no "
+    f"-o HostKeyAlgorithms=ssh-rsa "
+    f"-o KexAlgorithms=diffie-hellman-group14-sha256 "
+    f"-p {port} {ssh_user}@{host}"
+)
+
+child = pexpect.spawn(ssh_cmd, timeout=25, encoding="utf-8")
+
+def expect_any(patterns, timeout=25):
+    child.timeout = timeout
+    return child.expect(patterns)
+
 try:
-    # Socket con timeout (controla cuelgues)
-    sock = socket.create_connection((host, port), timeout=10)
+    # --- LOGIN (mismo esquema que ya te funciona) ---
+    while True:
+        i = expect_any([
+            r"Are you sure you want to continue connecting \(yes/no\)\?",
+            r"[Pp]assword:\s*$",
+            r".*'s password:\s*$",
+        ] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF], timeout=25)
 
-    transport = paramiko.Transport(sock)
-
-    # Forzar KEX según lo que ofrece tu TP-Link (visto en el error)
-    so = transport.get_security_options()
-    so.kex = [
-        "diffie-hellman-group14-sha256",
-        "diffie-hellman-group16-sha512",
-        "diffie-hellman-group1-sha1",
-    ]
-    so.key_types = ["ssh-rsa", "rsa-sha2-256", "rsa-sha2-512"]
-
-    transport.start_client(timeout=12)
-
-    # ✅ IMPORTANTE: tu paramiko no acepta timeout= en auth_password()
-    transport.auth_password(username=ssh_user, password=ssh_password)
-
-    # Shell interactivo
-    chan = transport.open_session()
-    chan.get_pty(width=200, height=50)
-    chan.invoke_shell()
-
-    # Asentar sesión (banners / enter / paginación)
-    chan.send("\n")
-    _, buf = read_until(chan, PROMPT_REGEX + [r"Press any key", r"Press Enter", r"--More--"], timeout=12)
-
-    if re.search(r"Press any key|Press Enter", buf, re.I):
-        chan.send("\n")
-        _, buf2 = read_until(chan, PROMPT_REGEX + [r"--More--"], timeout=12)
-        buf += buf2
-
-    if re.search(r"--More--", buf, re.I):
-        chan.send(" ")
-        _, buf2 = read_until(chan, PROMPT_REGEX, timeout=12)
-        buf += buf2
-
-    # Asegurar prompt
-    idx, buf3 = read_until(chan, PROMPT_REGEX, timeout=12)
-    if idx == -1:
-        chan.send("\n")
-        idx, buf3 = read_until(chan, PROMPT_REGEX, timeout=12)
-    buf += buf3
-
-    if idx == -1:
-        print("❌ No pude estabilizar el prompt luego de autenticar.")
-        print("📌 Salida recibida:")
-        print(clean(buf))
-        transport.close()
-        sys.exit(1)
-
-    # Enable si no hay '#'
-    if not re.search(r"#\s*$", buf, re.M):
-        chan.send("enable\n")
-        k, out = read_until(chan, [r"[Pp]assword", r"#\s*$"] + PROMPT_REGEX, timeout=10)
-
-        if re.search(r"[Pp]assword", out):
-            chan.send(ssh_password + "\n")
-            _, out2 = read_until(chan, PROMPT_REGEX, timeout=12)
-            out += out2
-
-        buf += out
-
-    # Desactivar paginación (si aplica)
-    send_and_read(chan, "terminal length 0", reads=6)
-
-    # Ejecutar backup
-    cmd = f"copy startup-config tftp ip-address {tftp_server} filename {filename}"
-    print(f"▶️ Ejecutando: {cmd}")
-    chan.send(cmd + "\n")
-
-    # Esperar confirmaciones / prompt final
-    final_buf = ""
-    t0 = time.time()
-    while time.time() - t0 < 150:  # 2.5 min por si TFTP demora
-        time.sleep(0.25)
-        while chan.recv_ready():
-            final_buf += chan.recv(65535).decode("utf-8", errors="ignore")
-
-        # Confirmaciones típicas
-        if re.search(r"\(Y/N\)|\[Y/N\]|confirm|Are you sure", final_buf, re.I):
-            chan.send("Y\n")
-            final_buf = ""
+        if i == 0:
+            child.sendline("yes")
+        elif i in (1, 2):
+            child.sendline(ssh_password)
+        elif i < 3 + len(PROMPTS):
+            break
+        elif i == 3 + len(PROMPTS):  # TIMEOUT
+            child.sendline("")
             continue
-
-        if re.search(r"Destination filename.*:\s*$", final_buf, re.I | re.M):
-            chan.send(filename + "\n")
-            final_buf = ""
-            continue
-
-        if re.search(r"Remote host.*:\s*$|Address or name of remote host.*:\s*$", final_buf, re.I | re.M):
-            chan.send(tftp_server + "\n")
-            final_buf = ""
-            continue
-
-        # Errores
-        if re.search(r"%\s*Error|Error:|Invalid|Failed|No such|Timed out|TFTP", final_buf, re.I):
-            print("❌ Error reportado por el switch durante copy:")
-            print(clean(final_buf))
-            transport.close()
+        else:  # EOF
+            print("❌ EOF durante login. Salida:")
+            print(clean(child.before))
             sys.exit(1)
 
-        # Terminó si vuelve a prompt
-        if re.search(r"[>#\]]\s*$", final_buf, re.M):
+    # Asentar prompt
+    child.sendline("")
+    expect_any(PROMPTS, timeout=20)
+
+    # Enable (si no hay #)
+    if not re.search(r"#\s*$", child.after or "", re.M):
+        child.sendline("enable")
+        j = expect_any([r"[Pp]assword:\s*$", r".*'s password:\s*$"] + PROMPTS, timeout=12)
+        if j in (0, 1):
+            child.sendline(ssh_password)
+            expect_any(PROMPTS, timeout=15)
+
+    # Paginación off
+    child.sendline("terminal length 0")
+    expect_any(PROMPTS + [pexpect.TIMEOUT], timeout=8)
+
+    # --- COPY con control de progreso ---
+    cmd = f"copy startup-config tftp ip-address {tftp_server} filename {filename}"
+    print(f"▶️ Ejecutando: {cmd}")
+    child.sendline(cmd)
+
+    # Si en X segundos no cambia nada, abortamos
+    overall_timeout = 120          # total 2 minutos
+    no_progress_timeout = 25       # si 25s sin nueva salida -> sospecha TFTP colgado
+    last_len = 0
+
+    t0 = datetime.now().timestamp()
+    last_progress = datetime.now().timestamp()
+
+    while datetime.now().timestamp() - t0 < overall_timeout:
+        k = expect_any([
+            r"\(Y/N\)|\[Y/N\]|confirm|Are you sure",
+            r"Destination filename.*:\s*$",
+            r"Remote host.*:\s*$|Address or name of remote host.*:\s*$",
+            r"Press any key.*|Press Enter.*",
+            r"--More--",
+            r"%\s*Error|Error:|Invalid|Failed|No such|Timed out|TFTP",
+        ] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF], timeout=8)
+
+        # Capturar buffer para ver si hay avance
+        current = (child.before or "") + (child.after or "")
+        clen = len(current)
+
+        if clen != last_len:
+            last_progress = datetime.now().timestamp()
+            last_len = clen
+
+        # Si no hay progreso por X segundos -> colgado
+        if datetime.now().timestamp() - last_progress > no_progress_timeout:
+            print("❌ COPY parece COLGADO (sin progreso).")
+            print("📌 Esto suele ser TFTP bloqueado o esperando respuesta del servidor.")
+            print("📌 Última salida vista:")
+            print(clean(child.before))
+            child.close(force=True)
+            sys.exit(1)
+
+        # Volvió a prompt => OK
+        if k >= 6 and k < 6 + len(PROMPTS):
             print("✅ Backup finalizado (regresó a prompt).")
-            break
-    else:
-        print("⚠️ No confirmé fin del copy (no volvió al prompt).")
-        print("📌 Última salida:")
-        print(clean(final_buf))
+            child.sendline("exit")
+            child.close()
+            sys.exit(0)
 
-    try:
-        chan.send("exit\n")
-        time.sleep(0.3)
-    except Exception:
-        pass
+        if k == 0:
+            child.sendline("Y")
+        elif k == 1:
+            child.sendline(filename)
+        elif k == 2:
+            child.sendline(tftp_server)
+        elif k == 3:
+            child.sendline("")
+        elif k == 4:
+            child.send(" ")
+        elif k == 5:
+            print("❌ Error reportado por el switch durante copy:")
+            print(clean(child.before))
+            child.close(force=True)
+            sys.exit(1)
+        elif k == 6 + len(PROMPTS) + 1:  # EOF
+            print("❌ EOF durante copy. Última salida:")
+            print(clean(child.before))
+            sys.exit(1)
+        # TIMEOUT -> sigue loop
 
-    transport.close()
-    sys.exit(0)
+    print("❌ Timeout general ejecutando copy (2 min).")
+    print("📌 Última salida:")
+    print(clean(child.before))
+    child.close(force=True)
+    sys.exit(1)
 
 except Exception as e:
-    print(f"❌ Error ejecutando backup TFTP en TP-Link (Paramiko): {e}")
+    print(f"❌ Error ejecutando backup TFTP en TP-Link: {e}")
+    try:
+        child.close(force=True)
+    except:
+        pass
     sys.exit(1)
