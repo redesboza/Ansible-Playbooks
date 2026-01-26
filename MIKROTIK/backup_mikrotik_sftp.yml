@@ -1,0 +1,38 @@
+---
+- name: Backup MikroTik por SSH y subir a SFTP (AWX Credentials)
+  hosts: mikrotik
+  gather_facts: no
+
+  # Estas variables ponlas como Extra Vars en la plantilla de AWX (o Credential Type)
+  vars:
+    sftp_host: "{{ sftp_host }}"
+    sftp_port: "{{ sftp_port | default(22) }}"
+    sftp_user: "{{ sftp_user }}"
+    sftp_pass: "{{ sftp_pass }}"
+    sftp_dir:  "{{ sftp_dir  | default('/') }}"
+
+  tasks:
+    - name: Generar nombre base (hostname + timestamp)
+      ansible.builtin.set_fact:
+        ts: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+        base: "{{ inventory_hostname }}_{{ ts }}"
+
+    - name: Crear backup y export en MikroTik
+      ansible.builtin.raw: "/system backup save name={{ base }}"
+    - ansible.builtin.raw: "/export file={{ base }}"
+
+    - name: Subir .backup por SFTP (push desde MikroTik)
+      ansible.builtin.raw: >
+        /tool fetch upload=yes mode=sftp address={{ sftp_host }} port={{ sftp_port }}
+        user={{ sftp_user }} password="{{ sftp_pass }}"
+        src-path="{{ base }}.backup" dst-path="{{ sftp_dir }}/{{ base }}.backup"
+
+    - name: Subir .rsc por SFTP (push desde MikroTik)
+      ansible.builtin.raw: >
+        /tool fetch upload=yes mode=sftp address={{ sftp_host }} port={{ sftp_port }}
+        user={{ sftp_user }} password="{{ sftp_pass }}"
+        src-path="{{ base }}.rsc" dst-path="{{ sftp_dir }}/{{ base }}.rsc"
+
+    - name: (Opcional) borrar archivos locales en MikroTik
+      ansible.builtin.raw: "/file remove {{ base }}.backup"
+    - ansible.builtin.raw: "/file remove {{ base }}.rsc"
