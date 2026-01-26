@@ -1,0 +1,42 @@
+---
+- name: Crear usuario local en TP-Link (Omada/JetStream)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    new_user: "prueba"
+    new_pass: "pruebapass"
+    new_privilege: "admin"
+
+  tasks:
+    - name: Crear usuario (enable + configure + user name ...)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -u
+          - /runner/project/TPLINK/create_user_tplink.py
+          - "{{ ansible_host }}"
+          - "{{ ansible_user }}"
+          - "{{ ansible_ssh_pass }}"
+          - "{{ ansible_port | default('11110') }}"
+          - "{{ new_user }}"
+          - "{{ new_pass }}"
+          - "{{ new_privilege }}"
+      delegate_to: localhost
+      register: out
+      no_log: true
+
+    - name: Mostrar salida (sin exponer password)
+      ansible.builtin.debug:
+        var: out.stdout
+      no_log: false
+
+    - name: Mostrar log de sesión (últimas 120 líneas)
+      ansible.builtin.shell: "ls -1t /tmp/tplink_user_*.log 2>/dev/null | head -n 1 | xargs -r tail -n 120"
+      delegate_to: localhost
+      register: slog
+      ignore_errors: yes
+
+    - name: Debug session log
+      ansible.builtin.debug:
+        var: slog.stdout
