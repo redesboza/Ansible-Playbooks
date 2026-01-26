@@ -7,7 +7,7 @@
     tftp_server: "192.168.57.11"
 
   tasks:
-    - name: Ejecutar script backup TP-Link (SSH + enable + TFTP)
+    - name: Ejecutar backup TP-Link por CLI (enable + copy startup-config tftp)
       ansible.builtin.command:
         argv:
           - python3
@@ -27,7 +27,7 @@
         var: out.stdout
 
     - name: Mostrar log de sesión (últimas 250 líneas)
-      ansible.builtin.shell: "ls -1 /tmp/tplink_backup_*.log 2>/dev/null | tail -n 1 | xargs -r tail -n 250"
+      ansible.builtin.shell: "ls -1t /tmp/tplink_backup_*.log 2>/dev/null | head -n 1 | xargs -r tail -n 250"
       delegate_to: localhost
       register: slog
       ignore_errors: yes
