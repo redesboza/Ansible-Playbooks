@@ -1,0 +1,38 @@
+---
+- name: Buscar MAC en TP-Link (mac address-table)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    mac_to_find: "00:12:33:16:6b:5a"
+
+  tasks:
+    - name: Buscar MAC (enable + sh mac address-table address)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -u
+          - /runner/project/TPLINK/find_mac_tplink.py
+          - "{{ ansible_host }}"
+          - "{{ ansible_user }}"
+          - "{{ ansible_ssh_pass }}"
+          - "{{ ansible_port | default('11110') }}"
+          - "{{ mac_to_find }}"
+      delegate_to: localhost
+      register: out
+      no_log: true   # oculta el password de SSH en AWX
+
+    - name: Imprimir la salida (resultado)
+      ansible.builtin.debug:
+        var: out.stdout
+      no_log: false
+
+    - name: Mostrar log de sesión (últimas 120 líneas)
+      ansible.builtin.shell: "ls -1t /tmp/tplink_findmac_*.log 2>/dev/null | head -n 1 | xargs -r tail -n 120"
+      delegate_to: localhost
+      register: slog
+      ignore_errors: yes
+
+    - name: Debug session log
+      ansible.builtin.debug:
+        var: slog.stdout
