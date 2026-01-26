@@ -1,0 +1,40 @@
+---
+- name: Buscar MAC en MikroTik (ARP + Bridge Host + FDB)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    mac: "{{ mac }}"
+
+  tasks:
+    - name: Normalizar MAC (a mayúscula)
+      ansible.builtin.set_fact:
+        mac_u: "{{ mac | upper }}"
+
+    - name: Buscar MAC en ARP
+      ansible.builtin.raw: >
+        :put "=== ARP (IP <-> MAC) ===";
+        /ip arp print where mac-address={{ mac_u }};
+        /quit
+      register: arp_out
+
+    - name: Buscar MAC en Bridge Host (si aplica)
+      ansible.builtin.raw: >
+        :put "=== BRIDGE HOST (MAC -> PORT/INTERFACE) ===";
+        /interface bridge host print detail where mac-address={{ mac_u }};
+        /quit
+      register: br_out
+
+    - name: Buscar MAC en Bridge FDB (si aplica)
+      ansible.builtin.raw: >
+        :put "=== BRIDGE FDB (MAC forwarding) ===";
+        /interface bridge fdb print detail where mac-address={{ mac_u }};
+        /quit
+      register: fdb_out
+
+    - name: Imprimir resultados
+      ansible.builtin.debug:
+        msg:
+          - "{{ arp_out.stdout | default('') }}"
+          - "{{ br_out.stdout | default('') }}"
+          - "{{ fdb_out.stdout | default('') }}"
