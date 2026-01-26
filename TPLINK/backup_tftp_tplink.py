@@ -16,12 +16,7 @@ def log(msg: str):
 
 
 def prompt_any():
-    """
-    Prompt TP-Link puede venir:
-      - al inicio de línea: CAMARAS-MANTA#
-      - pegado después de texto/banner sin newline
-    Por eso NO anclamos con ^.
-    """
+    # Detecta ...> o ...# incluso si viene pegado (sin ^)
     return re.compile(r'(?m)[^\r\n]*[>#]\s*$')
 
 
@@ -32,9 +27,9 @@ def prompt_privileged():
 def parse_host_ip(tag: str, fallback_ip: str):
     """
     Acepta:
-      - inventory_hostname__ansible_host  (recomendado)
-      - inventory_hostname_ansible_host   (tu caso actual con _)
-      - solo hostname
+      - HOST__IP
+      - HOST_IP (si al final hay una IPv4)
+      - solo HOST
     """
     raw = (tag or "").strip()
 
@@ -42,8 +37,6 @@ def parse_host_ip(tag: str, fallback_ip: str):
         h, ip = raw.split("__", 1)
         return (h.strip() or "HOST", ip.strip() or fallback_ip)
 
-    # Si viene con "_" y parece que al final hay IP
-    # Ej: CAMARAS-MANTA_172.16.45.46
     m = re.match(r"^(.*)_(\d{1,3}(?:\.\d{1,3}){3})$", raw)
     if m:
         h = m.group(1).strip() or "HOST"
@@ -54,8 +47,9 @@ def parse_host_ip(tag: str, fallback_ip: str):
 
 
 def login_ssh(host, user, password, port):
+    # CLAVE: -tt fuerza pseudo-tty (muchos switches lo necesitan para CLI/prompt estable)
     ssh_cmd = (
-        f"ssh -o StrictHostKeyChecking=no "
+        f"ssh -tt -o StrictHostKeyChecking=no "
         f"-o UserKnownHostsFile=/dev/null "
         f"-o PreferredAuthentications=password "
         f"-o PubkeyAuthentication=no "
@@ -63,47 +57,41 @@ def login_ssh(host, user, password, port):
     )
 
     log(f"[+] Conectando por SSH: {user}@{host}:{port}")
-    child = pexpect.spawn(ssh_cmd, encoding="utf-8", timeout=30)
+    child = pexpect.spawn(ssh_cmd, encoding="utf-8", timeout=35)
     child.delaybeforesend = 0.05
 
-    # NO cambiamos autenticación, solo ampliamos compatibilidad de prompts
     patterns = [
         re.compile(r'(?i)are you sure you want to continue connecting'),  # 0
         re.compile(r'(?i)login as:\s*$'),                                 # 1
-        re.compile(r'(?i)user\s*name\s*:\s*$'),                            # 2  (User Name:)
-        re.compile(r'(?i)username\s*:\s*$'),                               # 3  (Username:)
-        re.compile(r'(?i)login\s*:\s*$'),                                  # 4  (login:)
+        re.compile(r'(?i)user\s*name\s*:\s*$'),                            # 2
+        re.compile(r'(?i)username\s*:\s*$'),                               # 3
+        re.compile(r'(?i)login\s*:\s*$'),                                  # 4
         re.compile(r'(?i)password\s*:\s*$'),                               # 5
         prompt_any(),                                                     # 6
         pexpect.TIMEOUT,                                                  # 7
         pexpect.EOF                                                       # 8
     ]
 
-    # Loop más largo para banners/logging antes del prompt
-    for _ in range(25):
-        idx = child.expect(patterns, timeout=30)
+    # Loop largo para banners/logging
+    for _ in range(30):
+        idx = child.expect(patterns, timeout=35)
 
         if idx == 0:
             child.sendline("yes")
             continue
-
         if idx in (1, 2, 3, 4):
             child.sendline(user)
             continue
-
         if idx == 5:
             child.sendline(password)
             continue
-
         if idx == 6:
             log("[+] Login OK, prompt detectado.")
             return child
-
         if idx == 7:
-            # MUY común: banner largo -> no aparece prompt aún. Mandamos ENTER y seguimos.
+            # banner largo: enviamos ENTER y seguimos
             child.sendline("")
             continue
-
         if idx == 8:
             raise RuntimeError("EOF durante login (conexión cerrada).")
 
@@ -112,65 +100,88 @@ def login_ssh(host, user, password, port):
 
 def enter_enable(child):
     """
-    TP-Link: enable + Enter sin contraseña para pasar de '>' a '#'
+    No esperamos prompt con ENTER vacío (algunos TP-Link no redibujan).
+    Hacemos enable directo y esperamos #.
     """
     any_p = prompt_any()
     priv_p = prompt_privileged()
 
-    child.sendline("")
-    child.expect(any_p, timeout=20)
-    after = (child.after or "").strip()
-
-    if after.endswith("#"):
-        log("[+] Ya estás en modo privilegiado (#).")
-        return
-
-    log("[+] Ejecutando enable (sin contraseña) para pasar a # ...")
+    log("[+] Ejecutando enable (sin contraseña) para asegurar modo privilegiado (#)...")
     child.sendline("enable")
 
     patterns = [
-        priv_p,                                   # 0
-        re.compile(r'(?i)password\s*:\s*$'),       # 1
-        any_p,                                    # 2
-        pexpect.TIMEOUT,                           # 3
-        pexpect.EOF                                # 4
+        priv_p,                                  # 0 -> quedó en #
+        re.compile(r'(?i)password\s*:\s*$'),      # 1 -> si pide password
+        any_p,                                    # 2 -> volvió a prompt (puede ser > o #)
+        pexpect.TIMEOUT,                          # 3
+        pexpect.EOF                               # 4
     ]
 
-    idx = child.expect(patterns, timeout=30)
+    idx = child.expect(patterns, timeout=35)
 
     if idx == 0:
         log("[+] Enable OK (#).")
         return
 
     if idx == 1:
-        # tu caso: sin password
+        # tu caso: sin password -> ENTER vacío
         log("  ↳ Password en enable detectado, enviando ENTER vacío.")
         child.sendline("")
-        child.expect(priv_p, timeout=30)
+        child.expect(priv_p, timeout=35)
         log("[+] Enable OK (#).")
         return
 
     if idx == 2:
-        # reintento
-        log("[WARN] No subió a # tras enable, reintentando…")
+        # Puede que ya esté en # o siga en >
+        after = (child.after or "").strip()
+        if after.endswith("#"):
+            log("[+] Ya estabas en modo privilegiado (#).")
+            return
+
+        # Si sigue en ">", reintento con ENTER + enable
+        log("[WARN] Aún no está en # (parece '>'). Reintentando enable...")
+        child.sendline("")          # a veces “despierta” el prompt
         child.sendline("enable")
-        idx2 = child.expect([priv_p, re.compile(r'(?i)password\s*:\s*$'), pexpect.TIMEOUT, pexpect.EOF], timeout=30)
+
+        idx2 = child.expect([priv_p, re.compile(r'(?i)password\s*:\s*$'), any_p, pexpect.TIMEOUT, pexpect.EOF], timeout=35)
         if idx2 == 0:
             log("[+] Enable OK (#).")
             return
         if idx2 == 1:
             child.sendline("")
-            child.expect(priv_p, timeout=30)
+            child.expect(priv_p, timeout=35)
             log("[+] Enable OK (#).")
             return
+        # Si vuelve any_p otra vez, verificamos si es #
+        if idx2 == 2 and (child.after or "").strip().endswith("#"):
+            log("[+] Enable OK (#).")
+            return
+
         raise RuntimeError("No fue posible entrar a modo privilegiado (#) con enable.")
 
     if idx == 3:
-        raise RuntimeError("Timeout ejecutando enable.")
+        # Si no hubo salida, hacemos un último intento
+        log("[WARN] No hubo salida tras enable (timeout). Enviando ENTER y reintentando...")
+        child.sendline("")
+        child.sendline("enable")
+        idx3 = child.expect([priv_p, re.compile(r'(?i)password\s*:\s*$'), any_p, pexpect.TIMEOUT, pexpect.EOF], timeout=35)
+        if idx3 == 0:
+            log("[+] Enable OK (#).")
+            return
+        if idx3 == 1:
+            child.sendline("")
+            child.expect(priv_p, timeout=35)
+            log("[+] Enable OK (#).")
+            return
+        if idx3 == 2 and (child.after or "").strip().endswith("#"):
+            log("[+] Enable OK (#).")
+            return
+        raise RuntimeError("Timeout ejecutando enable (sin ver prompt #).")
+
     raise RuntimeError("EOF ejecutando enable.")
 
 
-def handle_common_interactives(child, timeout=40):
+def handle_common_interactives(child, timeout=50):
     any_p = prompt_any()
     patterns = [
         any_p,                                                   # 0
@@ -182,7 +193,7 @@ def handle_common_interactives(child, timeout=40):
         pexpect.EOF                                               # 6
     ]
 
-    for _ in range(8):
+    for _ in range(10):
         idx = child.expect(patterns, timeout=timeout)
         if idx == 0:
             return True
@@ -197,11 +208,11 @@ def handle_common_interactives(child, timeout=40):
     return False
 
 
-def send_command_wait_prompt(child, cmd, timeout=60):
+def send_command_wait_prompt(child, cmd, timeout=220):
     log(f"[CMD] {cmd}")
     child.sendline(cmd)
 
-    ok = handle_common_interactives(child, timeout=min(timeout, 40))
+    ok = handle_common_interactives(child, timeout=50)
     if ok:
         return True
 
@@ -217,17 +228,17 @@ def main():
     if len(sys.argv) < 7:
         print(
             "Uso:\n"
-            "  backup_tftp_tplink.py <host> <user> <pass> <port> <tftp_server> <inventory_hostname__ansible_host>\n",
+            "  backup_tftp_tplink.py <host> <user> <pass> <port> <tftp_server> <inventory_tag>\n",
             file=sys.stderr
         )
         sys.exit(2)
 
-    host = sys.argv[1]          # ansible_host
+    host = sys.argv[1]
     user = sys.argv[2]
     password = sys.argv[3]
     port = sys.argv[4]
     tftp_server = sys.argv[5]
-    inv_tag = sys.argv[6]       # inventory_hostname__ansible_host (o con _)
+    inv_tag = sys.argv[6]
 
     hostname, ip = parse_host_ip(inv_tag, host)
 
@@ -238,17 +249,17 @@ def main():
     try:
         child = login_ssh(host, user, password, port)
 
-        # enable sin contraseña
+        # Paso crítico
         enter_enable(child)
 
         # write memory
         log("[+] Guardando configuración: copy running-config startup-config")
-        send_command_wait_prompt(child, "copy running-config startup-config", timeout=90)
+        send_command_wait_prompt(child, "copy running-config startup-config", timeout=140)
 
-        # backup tftp (TU comando)
+        # backup
         log(f"[+] Enviando startup-config a TFTP {tftp_server} filename {backup_filename}")
         cmd_backup = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
-        send_command_wait_prompt(child, cmd_backup, timeout=220)
+        send_command_wait_prompt(child, cmd_backup, timeout=260)
 
         log("[OK] Backup completado.")
         log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
