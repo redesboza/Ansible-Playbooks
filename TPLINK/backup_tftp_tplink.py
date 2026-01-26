@@ -6,7 +6,7 @@ import socket
 import time
 from datetime import datetime
 
-VERSION = "TPLINK_BACKUP_TFTP_INLINE_v2026-01-26_04"
+VERSION = "TPLINK_BACKUP_TFTP_INLINE_v2026-01-26_05"
 
 if len(sys.argv) != 7:
     print("❌ Uso: python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>", flush=True)
@@ -30,10 +30,15 @@ def tcp_ok(ip, p):
     except:
         return False
 
-def clean(s: str) -> str:
-    if not s:
+def clean(s) -> str:
+    if not isinstance(s, str):
         return ""
     return re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", s)
+
+def after_text(child) -> str:
+    """Convierte child.after a string seguro (TIMEOUT/EOF no son strings)."""
+    a = getattr(child, "after", "")
+    return a if isinstance(a, str) else ""
 
 PROMPTS = [
     r"#\s*$",
@@ -108,13 +113,13 @@ try:
     child.sendline("")
     child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=10)
 
-    # apagar logs en pantalla si existe
+    # apagar logs en pantalla si existe (si no existe, igual no rompe)
     child.sendline("terminal no monitor")
     child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=6)
 
     # -------- ENABLE (si aplica) --------
-    # Si no estamos en '#', hacemos enable. Muchos TP-Link no piden pass; por si acaso lo soportamos.
-    if not re.search(r"#\s*$", child.after or ""):
+    a_txt = after_text(child)  # ✅ FIX: after siempre string
+    if not re.search(r"#\s*$", a_txt):
         child.sendline("enable")
         k = child.expect([r"[Pp]assword:\s*$"] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF], timeout=12)
         if k == 0:
@@ -130,28 +135,25 @@ try:
     print(f"▶️ Ejecutando: {cmd}", flush=True)
     child.sendline(cmd)
 
-    # Esperamos los textos que TU equipo muestra
     patterns = [
-        r"Start to backup.*",                  # inicio
-        r"Backup user config file OK\.",       # éxito
-        r"Backup.*OK\.",                       # éxito alterno
-        r"%\s*Error|Error:|Invalid|Failed",     # error
+        r"Start to backup.*",
+        r"Backup user config file OK\.",
+        r"Backup.*OK\.",
+        r"%\s*Error|Error:|Invalid|Failed",
+        r"--More--",
     ] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF]
 
     saw_start = False
-    saw_ok = False
-
     t0 = time.time()
-    while time.time() - t0 < 120:  # 2 minutos deberían sobrar
-        j = child.expect(patterns, timeout=20)
+
+    while time.time() - t0 < 180:  # 3 minutos por si el TFTP tarda
+        j = child.expect(patterns, timeout=25)
 
         if j == 0:
             saw_start = True
             continue
 
         if j in (1, 2):
-            saw_ok = True
-            # esperamos que vuelva al prompt
             child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=30)
             print("✅ Backup OK (TP-Link confirmó).", flush=True)
             child.sendline("exit")
@@ -164,29 +166,31 @@ try:
             child.close(force=True)
             sys.exit(1)
 
-        # si vuelve a prompt sin OK, igual mostramos debug
-        if j in (4, 5, 6):
-            if saw_start and not saw_ok:
-                print("⚠️ Volvió a prompt pero no vi 'OK'. Salida previa:", flush=True)
+        if j == 4:
+            child.send(" ")
+            continue
+
+        # volvió a prompt sin OK
+        if j in (5, 6, 7):
+            if saw_start:
+                print("⚠️ Volvió a prompt pero NO vi 'OK'. Salida:", flush=True)
                 print(clean(child.before), flush=True)
                 child.sendline("exit")
                 child.close()
                 sys.exit(1)
-            # si no vimos nada, seguimos un poco más
             continue
 
-        if j == 7:  # TIMEOUT
+        if j == 8:  # TIMEOUT
             child.sendline("")
             continue
 
-        if j == 8:  # EOF
+        if j == 9:  # EOF
             print("❌ EOF durante copy. Última salida:", flush=True)
             print(clean(child.before), flush=True)
             sys.exit(1)
 
-    print("❌ Timeout general ejecutando copy (120s). Última salida:", flush=True)
+    print("❌ Timeout general ejecutando copy (180s). Última salida:", flush=True)
     print(clean(child.before), flush=True)
-    print(f"DEBUG saw_start={saw_start} saw_ok={saw_ok}", flush=True)
     child.close(force=True)
     sys.exit(1)
 
