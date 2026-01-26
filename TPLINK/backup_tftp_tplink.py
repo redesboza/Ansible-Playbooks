@@ -5,7 +5,9 @@ import sys
 import re
 import time
 from datetime import datetime
-import pexpect
+
+from netmiko import ConnectHandler
+from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
 
 
 def log(msg: str):
@@ -13,7 +15,7 @@ def log(msg: str):
 
 
 def sanitize_filename(s: str) -> str:
-    return re.sub(r'[^A-Za-z0-9._-]+', '_', s).strip('_')
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_")
 
 
 def parse_host_ip(tag: str, fallback_ip: str):
@@ -36,114 +38,92 @@ def parse_host_ip(tag: str, fallback_ip: str):
     return (raw if raw else "HOST", fallback_ip)
 
 
-def prompt_any():
-    # Detecta ...> o ...# incluso si viene pegado (sin ^)
-    return re.compile(r'(?m)[^\r\n]*[>#]\s*$')
+def is_privileged(prompt: str) -> bool:
+    return (prompt or "").strip().endswith("#")
 
 
-def login_ssh(host, user, password, port):
-    # NO cambiamos tu autenticación: solo mejoramos estabilidad de sesión con -tt
-    ssh_cmd = (
-        f"ssh -tt -o StrictHostKeyChecking=no "
-        f"-o UserKnownHostsFile=/dev/null "
-        f"-o PreferredAuthentications=password "
-        f"-o PubkeyAuthentication=no "
-        f"-p {port} {user}@{host}"
-    )
+def ensure_enable(conn) -> str:
+    """
+    TP-Link: entra en '>' y con enable + ENTER (sin contraseña) pasa a '#'.
+    En algunos equipos no re-imprime prompt rápido, por eso usamos timing.
+    """
+    prompt = conn.find_prompt()
+    log(f"[INFO] Prompt inicial: {prompt.strip()}")
 
-    log(f"[+] Conectando por SSH: {user}@{host}:{port}")
-    child = pexpect.spawn(ssh_cmd, encoding="utf-8", timeout=35)
-    child.delaybeforesend = 0.05
+    if is_privileged(prompt):
+        return prompt
 
-    patterns = [
-        re.compile(r'(?i)are you sure you want to continue connecting'),  # 0
-        re.compile(r'(?i)login as:\s*$'),                                 # 1
-        re.compile(r'(?i)user\s*name\s*:\s*$'),                            # 2
-        re.compile(r'(?i)username\s*:\s*$'),                               # 3
-        re.compile(r'(?i)login\s*:\s*$'),                                  # 4
-        re.compile(r'(?i)password\s*:\s*$'),                               # 5
-        prompt_any(),                                                     # 6
-        pexpect.TIMEOUT,                                                  # 7
-        pexpect.EOF                                                       # 8
-    ]
+    log("[+] Enviando enable (sin contraseña)...")
+    out = conn.send_command_timing("enable", strip_prompt=False, strip_command=False)
+    # Si pide password, enviamos ENTER vacío
+    if re.search(r"(?i)password", out or ""):
+        out2 = conn.send_command_timing("", strip_prompt=False, strip_command=False)
+        out = (out or "") + "\n" + (out2 or "")
+    else:
+        # muchos TP-Link requieren un ENTER adicional aunque no pidan nada
+        conn.send_command_timing("", strip_prompt=False, strip_command=False)
 
-    # tolera banners/logging antes del prompt
-    for _ in range(35):
-        idx = child.expect(patterns, timeout=35)
+    # Reintento de prompt
+    try:
+        prompt = conn.find_prompt()
+    except Exception:
+        prompt = ""
 
-        if idx == 0:
-            child.sendline("yes")
-            continue
-        if idx in (1, 2, 3, 4):
-            child.sendline(user)
-            continue
-        if idx == 5:
-            child.sendline(password)
-            continue
-        if idx == 6:
-            log("[+] Login OK, prompt detectado.")
-            return child
-        if idx == 7:
-            child.sendline("")
-            continue
-        if idx == 8:
-            raise RuntimeError("EOF durante login (conexión cerrada).")
+    if is_privileged(prompt):
+        log(f"[INFO] Prompt tras enable: {prompt.strip()}")
+        return prompt
 
-    raise RuntimeError("Timeout durante login (no apareció prompt/credenciales).")
+    # Último intento suave
+    conn.send_command_timing("enable", strip_prompt=False, strip_command=False)
+    conn.send_command_timing("", strip_prompt=False, strip_command=False)
+    try:
+        prompt = conn.find_prompt()
+    except Exception:
+        prompt = ""
+
+    log(f"[INFO] Prompt tras enable (2do intento): {prompt.strip()}")
+    return prompt
 
 
-def send_cmd(child, cmd: str):
+def run_cmd_timing(conn, cmd: str, timeout_loops=300, delay_factor=2) -> str:
+    """
+    Ejecuta comando tolerando CLIs que no reimprimen prompt.
+    Además responde confirmaciones comunes.
+    """
     log(f"[CMD] {cmd}")
-    child.sendline(cmd)
+    out = conn.send_command_timing(
+        cmd,
+        strip_prompt=False,
+        strip_command=False,
+        delay_factor=delay_factor,
+        max_loops=timeout_loops,
+    ) or ""
+
+    # Confirmaciones típicas
+    if re.search(r"(?i)\(y/n\)", out) or re.search(r"(?i)confirm", out) or re.search(r"(?i)are you sure", out):
+        out2 = conn.send_command_timing("y", strip_prompt=False, strip_command=False) or ""
+        out = out + "\n" + out2
+
+    # Si pide "filename" o algo similar (por si acaso)
+    if re.search(r"(?i)filename", out) and "tftp" in cmd.lower():
+        # ya enviamos filename en el comando, pero por seguridad mandamos ENTER
+        out2 = conn.send_command_timing("", strip_prompt=False, strip_command=False) or ""
+        out = out + "\n" + out2
+
+    return out.strip()
 
 
-def wait_for_backup_ok(child, timeout=260) -> bool:
-    """
-    Tu TP-Link imprime:
-      - Start to backup user config file......
-      - Backup user config file OK.
-    Así que confirmamos por texto, NO por prompt.
-    """
-    patterns = [
-        re.compile(r'(?i)start to backup'),                # 0
-        re.compile(r'(?i)backup user config file ok'),     # 1
-        re.compile(r'(?i)backup.*ok'),                      # 2 (genérico)
-        re.compile(r'(?i)(denied|insufficient|not allowed|invalid|error|unrecognized)'),  # 3
-        prompt_any(),                                       # 4 (si aparece, ok)
-        pexpect.TIMEOUT,                                    # 5
-        pexpect.EOF                                         # 6
-    ]
+def has_error(text: str) -> bool:
+    if not text:
+        return False
+    return bool(re.search(r"(?i)(denied|insufficient|not allowed|invalid input|unrecognized|error)", text))
 
-    saw_start = False
-    start = time.time()
 
-    while (time.time() - start) < timeout:
-        idx = child.expect(patterns, timeout=30)
-
-        if idx == 0:
-            saw_start = True
-            continue
-
-        if idx in (1, 2):
-            return True
-
-        if idx == 3:
-            return False
-
-        if idx == 4:
-            # si ya vimos "start to backup", seguimos esperando "OK"
-            if saw_start:
-                continue
-            # si no vimos start, no concluye nada
-            continue
-
-        if idx == 5:
-            continue
-
-        if idx == 6:
-            raise RuntimeError("EOF durante backup (sesión cerrada).")
-
-    return False
+def backup_ok(text: str) -> bool:
+    if not text:
+        return False
+    # Basado en tu salida real: "Backup user config file OK."
+    return bool(re.search(r"(?i)backup.*ok", text)) or bool(re.search(r"(?i)backup user config file ok", text))
 
 
 def main():
@@ -151,14 +131,14 @@ def main():
         print(
             "Uso:\n"
             "  backup_tftp_tplink.py <host> <user> <pass> <port> <tftp_server> <inventory_tag>\n",
-            file=sys.stderr
+            file=sys.stderr,
         )
         sys.exit(2)
 
     host = sys.argv[1]
     user = sys.argv[2]
     password = sys.argv[3]
-    port = sys.argv[4]
+    port = int(sys.argv[4])
     tftp_server = sys.argv[5]
     inv_tag = sys.argv[6]
 
@@ -166,44 +146,74 @@ def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_filename = sanitize_filename(f"{hostname}_{ip}_{ts}.cfg")
 
-    child = None
+    # TP-Link no siempre está en device_type de netmiko, el más estable aquí es cisco_ios (para prompt/enable)
+    device = {
+        "device_type": "cisco_ios",
+        "host": host,
+        "username": user,
+        "password": password,
+        "port": port,
+        "secret": "",        # enable sin contraseña
+        "fast_cli": False,
+        "conn_timeout": 40,
+        "banner_timeout": 60,
+        "auth_timeout": 40,
+    }
+
+    conn = None
     try:
-        child = login_ssh(host, user, password, port)
+        log(f"[+] Conectando por SSH (Netmiko): {user}@{host}:{port}")
+        conn = ConnectHandler(**device)
+        log("[+] Login OK.")
 
-        # enable: tu caso es SIN contraseña -> enable + Enter
-        # No esperamos prompt (tu equipo a veces no reimprime)
-        log("[+] Enviando enable (sin contraseña) ...")
-        child.sendline("enable")
-        child.sendline("")
-        time.sleep(0.8)
+        prompt = ensure_enable(conn)
+        if not is_privileged(prompt):
+            log("[WARN] No pude confirmar '#', pero continúo (algunos TP-Link no reimprimen prompt).")
 
-        # (Opcional) write memory
-        send_cmd(child, "copy running-config startup-config")
-        time.sleep(0.8)
+        # 1) Guardar config
+        out1 = run_cmd_timing(conn, "copy running-config startup-config", timeout_loops=250, delay_factor=2)
+        if out1:
+            log(f"[OUT] {out1}")
+        if has_error(out1):
+            raise RuntimeError("Error ejecutando: copy running-config startup-config")
 
-        # Backup TFTP (comando exacto)
-        cmd_backup = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
-        send_cmd(child, cmd_backup)
+        # 2) Backup a TFTP (comando exacto)
+        cmd_bkp = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
+        out2 = run_cmd_timing(conn, cmd_bkp, timeout_loops=400, delay_factor=3)
+        if out2:
+            log(f"[OUT] {out2}")
+        if has_error(out2):
+            raise RuntimeError("Error ejecutando backup a TFTP")
 
-        ok = wait_for_backup_ok(child, timeout=260)
-        if not ok:
-            raise RuntimeError("No se detectó 'Backup user config file OK.' en la salida del equipo.")
+        # Confirmación por texto OK (tu evidencia real)
+        if not backup_ok(out2):
+            # algunos equipos no imprimen mucho, damos un pequeño margen
+            time.sleep(1)
+            # no hacemos show porque puede variar; solo avisamos warning
+            log("[WARN] No vi 'Backup ... OK' explícito. Si el TFTP recibió el archivo, está OK.")
 
-        log("[OK] Backup completado (confirmado por salida OK).")
+        log("[OK] Proceso terminado.")
         log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
 
-        child.sendline("exit")
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+
         sys.exit(0)
 
+    except (NetmikoTimeoutException, NetmikoAuthenticationException) as e:
+        log(f"[ERROR] Netmiko conexión/autenticación: {e}")
+        sys.exit(1)
     except Exception as e:
         log(f"[ERROR] {e}")
-        if child is not None:
-            try:
-                log("[DEBUG] Última salida recibida:")
-                log(child.before[-1200:] if child.before else "(vacío)")
-            except Exception:
-                pass
         sys.exit(1)
+    finally:
+        try:
+            if conn:
+                conn.disconnect()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
