@@ -1,3 +1,4 @@
+---
 - name: Backup startup-config a TFTP (TP-Link)
   hosts: all
   gather_facts: no
@@ -21,5 +22,16 @@
       delegate_to: localhost
       register: out
 
-    - debug:
+    - name: Mostrar salida del script
+      ansible.builtin.debug:
         var: out.stdout
+
+    - name: Mostrar log de sesión (últimas 200 líneas)
+      ansible.builtin.shell: "ls -1 /tmp/tplink_backup_*.log 2>/dev/null | tail -n 1 | xargs -r tail -n 200"
+      delegate_to: localhost
+      register: slog
+      ignore_errors: yes
+
+    - name: Debug session log
+      ansible.builtin.debug:
+        var: slog.stdout
