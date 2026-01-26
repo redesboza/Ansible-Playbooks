@@ -1,207 +1,261 @@
 #!/usr/bin/env python3
-import pexpect
+# -*- coding: utf-8 -*-
+
 import sys
 import re
-import socket
-import time
 from datetime import datetime
+import pexpect
 
-VERSION = "TPLINK_BACKUP_TFTP_INLINE_v2026-01-26_05"
 
-if len(sys.argv) != 7:
-    print("❌ Uso: python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>", flush=True)
-    sys.exit(1)
+def sanitize_filename(s: str) -> str:
+    return re.sub(r'[^A-Za-z0-9._-]+', '_', s).strip('_')
 
-host         = sys.argv[1]
-ssh_user     = sys.argv[2]
-ssh_password = sys.argv[3]
-port         = sys.argv[4]
-tftp_server  = sys.argv[5]
-basename     = sys.argv[6]
 
-ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-filename = f"{basename}_{ts}.cfg"
+def log(msg: str):
+    print(msg, flush=True)
 
-def tcp_ok(ip, p):
-    try:
-        s = socket.create_connection((ip, int(p)), timeout=5)
-        s.close()
-        return True
-    except:
-        return False
 
-def clean(s) -> str:
-    if not isinstance(s, str):
-        return ""
-    return re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", s)
+def prompt_any():
+    # TP-Link: HOST> o HOST#
+    return re.compile(r'(?m)^[^\r\n]*[>#]\s*$')
 
-def after_text(child) -> str:
-    """Convierte child.after a string seguro (TIMEOUT/EOF no son strings)."""
-    a = getattr(child, "after", "")
-    return a if isinstance(a, str) else ""
 
-PROMPTS = [
-    r"#\s*$",
-    r">\s*$",
-    r"\]\s*$",
-]
+def prompt_privileged():
+    # TP-Link privilegiado: HOST#
+    return re.compile(r'(?m)^[^\r\n]*#\s*$')
 
-LOGIN_PATTERNS = [
-    r"Are you sure you want to continue connecting \(yes/no\)\?",
-    r"login as:",
-    r"User Name:",
-    r"Username:",
-    r"[Pp]assword:\s*$",
-    r"Press any key.*",
-    r"--More--",
-] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF]
 
-print(f"🧩 Script: {VERSION}", flush=True)
-print(f"🔎 Precheck TCP {host}:{port} ...", flush=True)
-if not tcp_ok(host, port):
-    print(f"❌ No hay conectividad TCP desde el EE hacia {host}:{port}", flush=True)
-    sys.exit(1)
-print("✅ Puerto accesible desde el Execution Environment.", flush=True)
+def login_ssh(host, user, password, port):
+    ssh_cmd = (
+        f"ssh -o StrictHostKeyChecking=no "
+        f"-o UserKnownHostsFile=/dev/null "
+        f"-o PreferredAuthentications=password "
+        f"-o PubkeyAuthentication=no "
+        f"-p {port} {user}@{host}"
+    )
 
-print(f"🔐 Conectando a {host}:{port} como {ssh_user}...", flush=True)
-print(f"📦 Backup startup-config a TFTP: {tftp_server}  archivo: {filename}", flush=True)
+    log(f"[+] Conectando por SSH: {user}@{host}:{port}")
+    child = pexpect.spawn(ssh_cmd, encoding="utf-8", timeout=25)
+    child.delaybeforesend = 0.05
 
-# ✅ MISMA autenticación que ya te funciona (NO la cambio)
-ssh_cmd = (
-    f"ssh -tt "
-    f"-o StrictHostKeyChecking=no "
-    f"-o UserKnownHostsFile=/dev/null "
-    f"-o PreferredAuthentications=password,keyboard-interactive "
-    f"-o PubkeyAuthentication=no "
-    f"-o HostKeyAlgorithms=ssh-rsa "
-    f"-o KexAlgorithms=diffie-hellman-group14-sha256 "
-    f"-p {port} {ssh_user}@{host}"
-)
+    # NO se modifica autenticación: mismos prompts
+    patterns = [
+        re.compile(r'(?i)are you sure you want to continue connecting'),  # 0
+        re.compile(r'(?i)login as:\s*$'),                                 # 1
+        re.compile(r'(?i)user(name)?\s*:\s*$'),                            # 2
+        re.compile(r'(?i)password\s*:\s*$'),                               # 3
+        prompt_any(),                                                     # 4
+        pexpect.TIMEOUT,                                                  # 5
+        pexpect.EOF                                                       # 6
+    ]
 
-child = pexpect.spawn(ssh_cmd, encoding="utf-8", timeout=30)
-child.delaybeforesend = 0.05
+    for _ in range(12):
+        idx = child.expect(patterns, timeout=25)
 
-try:
-    time.sleep(0.2)
-    child.sendline("")
-
-    # -------- LOGIN LOOP --------
-    while True:
-        i = child.expect(LOGIN_PATTERNS, timeout=30)
-
-        if i == 0:
+        if idx == 0:
             child.sendline("yes")
-        elif i in (1, 2, 3):
-            child.sendline(ssh_user)
-        elif i == 4:
-            child.sendline(ssh_password)
-        elif i == 5:
-            child.sendline("")
-        elif i == 6:
-            child.send(" ")
-        elif i in (7, 8, 9):
-            break
-        elif i == 10:
-            child.sendline("")
             continue
-        else:
-            print("❌ EOF durante login. Salida:", flush=True)
-            print(clean(child.before), flush=True)
-            sys.exit(1)
+        if idx == 1:
+            child.sendline(user)
+            continue
+        if idx == 2:
+            child.sendline(user)
+            continue
+        if idx == 3:
+            child.sendline(password)
+            continue
+        if idx == 4:
+            log("[+] Login OK, prompt detectado.")
+            return child
+        if idx == 5:
+            raise RuntimeError("Timeout durante login (no apareció prompt/credenciales).")
+        if idx == 6:
+            raise RuntimeError("EOF durante login (conexión cerrada).")
 
-    # refrescar prompt
+    raise RuntimeError("No se logró llegar al prompt luego del login.")
+
+
+def enter_enable(child):
+    """
+    TP-Link: ejecutar 'enable' + Enter (sin contraseña) para pasar de '>' a '#'.
+    """
+    any_prompt = prompt_any()
+    priv_prompt = prompt_privileged()
+
+    # Asegura prompt
     child.sendline("")
-    child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=10)
+    child.expect(any_prompt, timeout=20)
+    last = (child.after or "").strip()
 
-    # apagar logs en pantalla si existe (si no existe, igual no rompe)
-    child.sendline("terminal no monitor")
-    child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=6)
+    if last.endswith("#"):
+        log("[+] Ya estás en modo privilegiado (#).")
+        return
 
-    # -------- ENABLE (si aplica) --------
-    a_txt = after_text(child)  # ✅ FIX: after siempre string
-    if not re.search(r"#\s*$", a_txt):
-        child.sendline("enable")
-        k = child.expect([r"[Pp]assword:\s*$"] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF], timeout=12)
-        if k == 0:
-            child.sendline(ssh_password)
-            child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=20)
-
-    # quitar paginación (si soporta)
-    child.sendline("terminal length 0")
-    child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=8)
-
-    # -------- COMANDO EXACTO (inline) --------
-    cmd = f"copy startup-config tftp ip-address {tftp_server} filename {filename}"
-    print(f"▶️ Ejecutando: {cmd}", flush=True)
-    child.sendline(cmd)
+    log("[+] Ejecutando enable (sin contraseña) para pasar a # ...")
+    child.sendline("enable")
 
     patterns = [
-        r"Start to backup.*",
-        r"Backup user config file OK\.",
-        r"Backup.*OK\.",
-        r"%\s*Error|Error:|Invalid|Failed",
-        r"--More--",
-    ] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF]
+        priv_prompt,                                 # 0
+        re.compile(r'(?i)password\s*:\s*$'),         # 1 (si llegara a pedir)
+        any_prompt,                                  # 2 (se quedó en >)
+        pexpect.TIMEOUT,                             # 3
+        pexpect.EOF                                  # 4
+    ]
 
-    saw_start = False
-    t0 = time.time()
+    idx = child.expect(patterns, timeout=25)
 
-    while time.time() - t0 < 180:  # 3 minutos por si el TFTP tarda
-        j = child.expect(patterns, timeout=25)
+    if idx == 0:
+        log("[+] Enable OK (#).")
+        return
 
-        if j == 0:
-            saw_start = True
-            continue
+    if idx == 1:
+        # tu caso: sin contraseña -> ENTER vacío
+        log("  ↳ Password en enable detectado, enviando ENTER vacío.")
+        child.sendline("")
+        child.expect(priv_prompt, timeout=25)
+        log("[+] Enable OK (#).")
+        return
 
-        if j in (1, 2):
-            child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=30)
-            print("✅ Backup OK (TP-Link confirmó).", flush=True)
-            child.sendline("exit")
-            child.close()
-            sys.exit(0)
-
-        if j == 3:
-            print("❌ El equipo reportó error durante el copy:", flush=True)
-            print(clean(child.before), flush=True)
-            child.close(force=True)
-            sys.exit(1)
-
-        if j == 4:
-            child.send(" ")
-            continue
-
-        # volvió a prompt sin OK
-        if j in (5, 6, 7):
-            if saw_start:
-                print("⚠️ Volvió a prompt pero NO vi 'OK'. Salida:", flush=True)
-                print(clean(child.before), flush=True)
-                child.sendline("exit")
-                child.close()
-                sys.exit(1)
-            continue
-
-        if j == 8:  # TIMEOUT
+    if idx == 2:
+        # reintento 1 vez
+        log("[WARN] No subió a # tras enable, reintentando una vez…")
+        child.sendline("enable")
+        idx2 = child.expect([priv_prompt, re.compile(r'(?i)password\s*:\s*$'), pexpect.TIMEOUT, pexpect.EOF], timeout=25)
+        if idx2 == 0:
+            log("[+] Enable OK (#).")
+            return
+        if idx2 == 1:
             child.sendline("")
+            child.expect(priv_prompt, timeout=25)
+            log("[+] Enable OK (#).")
+            return
+        raise RuntimeError("No fue posible entrar a modo privilegiado (#) con enable.")
+
+    if idx == 3:
+        raise RuntimeError("Timeout ejecutando enable.")
+    raise RuntimeError("EOF ejecutando enable.")
+
+
+def handle_common_interactives(child, timeout=40):
+    """
+    Responde confirmaciones comunes y vuelve al prompt.
+    """
+    any_prompt = prompt_any()
+    patterns = [
+        any_prompt,                                                   # 0
+        re.compile(r'(?i)\(y/n\)\??\s*$'),                             # 1
+        re.compile(r'(?i)\([yY]/[nN]\)\??\s*$'),                       # 2
+        re.compile(r'(?i)are you sure.*\?\s*$'),                       # 3
+        re.compile(r'(?i)confirm\??\s*$'),                             # 4
+        pexpect.TIMEOUT,                                               # 5
+        pexpect.EOF                                                    # 6
+    ]
+
+    for _ in range(6):
+        idx = child.expect(patterns, timeout=timeout)
+        if idx == 0:
+            return True
+        if idx in (1, 2, 3, 4):
+            log("  ↳ Confirmación detectada, respondiendo 'y'")
+            child.sendline("y")
             continue
+        if idx == 5:
+            return False
+        if idx == 6:
+            raise RuntimeError("EOF: sesión SSH terminó inesperadamente.")
+    return False
 
-        if j == 9:  # EOF
-            print("❌ EOF durante copy. Última salida:", flush=True)
-            print(clean(child.before), flush=True)
-            sys.exit(1)
 
-    print("❌ Timeout general ejecutando copy (180s). Última salida:", flush=True)
-    print(clean(child.before), flush=True)
-    child.close(force=True)
-    sys.exit(1)
+def send_command_wait_prompt(child, cmd, timeout=60):
+    log(f"[CMD] {cmd}")
+    child.sendline(cmd)
 
-except Exception as e:
-    print(f"❌ Error ejecutando backup TFTP en TP-Link: {e}", flush=True)
-    print("📌 DEBUG before:", flush=True)
-    print(clean(getattr(child, "before", "")), flush=True)
-    print("📌 DEBUG after:", flush=True)
-    print(repr(getattr(child, "after", "")), flush=True)
+    ok = handle_common_interactives(child, timeout=min(timeout, 40))
+    if ok:
+        return True
+
+    idx = child.expect([prompt_any(), pexpect.TIMEOUT, pexpect.EOF], timeout=timeout)
+    if idx == 0:
+        return True
+    if idx == 1:
+        raise RuntimeError(f"Timeout esperando prompt tras ejecutar: {cmd}")
+    raise RuntimeError("EOF: la sesión terminó mientras se esperaba el prompt.")
+
+
+def parse_host_ip(tag: str, fallback_ip: str):
+    """
+    Espera tag como: inventory_hostname__ansible_host
+    Ej: CAMARAS-MANTA__192.168.10.5
+    """
+    raw = (tag or "").strip()
+    if "__" in raw:
+        h, ip = raw.split("__", 1)
+        h = h.strip() or "HOST"
+        ip = ip.strip() or fallback_ip
+        return h, ip
+    # si no viene con "__", usamos lo que tengamos
+    return raw if raw else "HOST", fallback_ip
+
+
+def main():
+    if len(sys.argv) < 7:
+        print(
+            "Uso:\n"
+            "  backup_tftp_tplink.py <host> <user> <pass> <port> <tftp_server> <inventory_hostname__ansible_host>\n",
+            file=sys.stderr
+        )
+        sys.exit(2)
+
+    host = sys.argv[1]          # ansible_host
+    user = sys.argv[2]
+    password = sys.argv[3]
+    port = sys.argv[4]
+    tftp_server = sys.argv[5]
+    inv_tag = sys.argv[6]       # inventory_hostname__ansible_host
+
+    hostname, ip = parse_host_ip(inv_tag, host)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # filename requerido: basado en hostname + ip (y timestamp para no pisar)
+    backup_filename = sanitize_filename(f"{hostname}_{ip}_{ts}.cfg")
+
+    child = None
     try:
-        child.close(force=True)
-    except:
-        pass
-    sys.exit(1)
+        child = login_ssh(host, user, password, port)
+
+        # IMPORTANTE: enable sin contraseña
+        enter_enable(child)
+
+        # Guardar config (write memory)
+        log("[+] Guardando configuración: copy running-config startup-config")
+        send_command_wait_prompt(child, "copy running-config startup-config", timeout=80)
+
+        # Backup exacto TP-Link
+        log(f"[+] Enviando startup-config a TFTP {tftp_server} filename {backup_filename}")
+        cmd_backup = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
+        send_command_wait_prompt(child, cmd_backup, timeout=180)
+
+        log("[OK] Backup completado (según retorno al prompt).")
+        log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
+
+        child.sendline("exit")
+        try:
+            child.expect(pexpect.EOF, timeout=10)
+        except Exception:
+            pass
+
+        sys.exit(0)
+
+    except Exception as e:
+        log(f"[ERROR] {e}")
+        if child is not None:
+            try:
+                log("[DEBUG] Última salida recibida:")
+                log(child.before[-1200:] if child.before else "(vacío)")
+            except Exception:
+                pass
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
