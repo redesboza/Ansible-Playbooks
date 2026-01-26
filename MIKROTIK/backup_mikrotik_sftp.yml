@@ -19,9 +19,12 @@
       ansible.builtin.set_fact:
         sftp_dir_clean: "{{ sftp_dir | regex_replace('^/+','') | regex_replace('/+$','') }}"
 
-    - name: Armar nombre base con hostname + IP + timestamp
+    - name: Calcular IP para nombre (ansible_host) con guiones
       ansible.builtin.set_fact:
         ip_s: "{{ (ansible_host | default('NOIP')) | replace('.', '-') }}"
+
+    - name: Armar nombre base con hostname + IP + timestamp
+      ansible.builtin.set_fact:
         base: "{{ inventory_hostname }}_{{ ip_s }}_{{ ts }}"
 
     - name: Crear backup binario en MikroTik (forzar salida)
