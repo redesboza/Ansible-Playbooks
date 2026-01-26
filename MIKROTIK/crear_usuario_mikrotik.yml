@@ -1,5 +1,5 @@
 ---
-- name: Crear usuario en MikroTik (AWX)
+- name: Crear o actualizar usuario en MikroTik (AWX)
   hosts: all
   gather_facts: no
 
@@ -9,13 +9,14 @@
     mt_group: "{{ mt_group | default('full') }}"
 
   tasks:
-    - name: Crear usuario si no existe
+    - name: Crear o actualizar usuario (si existe, actualiza pass y group)
       ansible.builtin.raw: >
         :if ([:len [/user find name="{{ mt_user }}"]] = 0) do={
           /user add name="{{ mt_user }}" password="{{ mt_pass }}" group="{{ mt_group }}";
           :put ("OK_USER_CREATED {{ mt_user }}");
         } else={
-          :put ("OK_USER_EXISTS {{ mt_user }}");
+          /user set [find name="{{ mt_user }}"] password="{{ mt_pass }}" group="{{ mt_group }}";
+          :put ("OK_USER_UPDATED {{ mt_user }}");
         };
         /quit
       register: out_user
