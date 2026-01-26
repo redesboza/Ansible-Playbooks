@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: no
 
-  # Estas variables ponlas como Extra Vars en la plantilla de AWX (o Credential Type)
+  # Estas variables pásalas por Extra Vars en AWX (o un Credential Type)
   vars:
     sftp_host: "{{ sftp_host }}"
     sftp_port: "{{ sftp_port | default(22) }}"
@@ -12,14 +12,19 @@
     sftp_dir:  "{{ sftp_dir  | default('/') }}"
 
   tasks:
-    - name: Generar nombre base (hostname + timestamp)
+    - name: Generar timestamp
       ansible.builtin.set_fact:
         ts: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+    - name: Generar nombre base (hostname + timestamp)
+      ansible.builtin.set_fact:
         base: "{{ inventory_hostname }}_{{ ts }}"
 
-    - name: Crear backup y export en MikroTik
+    - name: Crear backup binario en MikroTik
       ansible.builtin.raw: "/system backup save name={{ base }}"
-    - ansible.builtin.raw: "/export file={{ base }}"
+
+    - name: Crear export texto en MikroTik
+      ansible.builtin.raw: "/export file={{ base }}"
 
     - name: Subir .backup por SFTP (push desde MikroTik)
       ansible.builtin.raw: >
