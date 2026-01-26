@@ -1,15 +1,15 @@
 ---
-- name: Backup MikroTik por SSH y subir a SFTP (AWX Credentials)
+- name: Backup MikroTik por SSH y subir a SFTP (AWX)
   hosts: all
   gather_facts: no
 
-  # Estas variables pásalas por Extra Vars en AWX (o un Credential Type)
+  # Estas variables pásalas por Extra Vars en AWX (o Credential Type)
   vars:
     sftp_host: "{{ sftp_host }}"
     sftp_port: "{{ sftp_port | default(22) }}"
     sftp_user: "{{ sftp_user }}"
     sftp_pass: "{{ sftp_pass }}"
-    sftp_dir:  "{{ sftp_dir  | default('/') }}"
+    sftp_dir:  "{{ sftp_dir | default('/') }}"
 
   tasks:
     - name: Generar timestamp
@@ -20,24 +20,53 @@
       ansible.builtin.set_fact:
         base: "{{ inventory_hostname }}_{{ ts }}"
 
-    - name: Crear backup binario en MikroTik
-      ansible.builtin.raw: "/system backup save name={{ base }}"
+    - name: Crear backup binario en MikroTik (evita cuelgue con /quit)
+      ansible.builtin.raw: '/system backup save name={{ base }}; :put "OK_BACKUP {{ base }}"; /quit'
+      register: out_backup
 
-    - name: Crear export texto en MikroTik
-      ansible.builtin.raw: "/export file={{ base }}"
+    - name: Mostrar salida backup
+      ansible.builtin.debug:
+        var: out_backup.stdout
+
+    - name: Crear export texto en MikroTik (evita cuelgue con /quit)
+      ansible.builtin.raw: '/export file={{ base }}; :put "OK_EXPORT {{ base }}"; /quit'
+      register: out_export
+
+    - name: Mostrar salida export
+      ansible.builtin.debug:
+        var: out_export.stdout
 
     - name: Subir .backup por SFTP (push desde MikroTik)
       ansible.builtin.raw: >
         /tool fetch upload=yes mode=sftp address={{ sftp_host }} port={{ sftp_port }}
         user={{ sftp_user }} password="{{ sftp_pass }}"
-        src-path="{{ base }}.backup" dst-path="{{ sftp_dir }}/{{ base }}.backup"
+        src-path="{{ base }}.backup" dst-path="{{ sftp_dir }}/{{ base }}.backup";
+        :put "OK_UPLOAD_BACKUP {{ base }}"; /quit
+      register: out_up_backup
+
+    - name: Mostrar salida upload backup
+      ansible.builtin.debug:
+        var: out_up_backup.stdout
 
     - name: Subir .rsc por SFTP (push desde MikroTik)
       ansible.builtin.raw: >
         /tool fetch upload=yes mode=sftp address={{ sftp_host }} port={{ sftp_port }}
         user={{ sftp_user }} password="{{ sftp_pass }}"
-        src-path="{{ base }}.rsc" dst-path="{{ sftp_dir }}/{{ base }}.rsc"
+        src-path="{{ base }}.rsc" dst-path="{{ sftp_dir }}/{{ base }}.rsc";
+        :put "OK_UPLOAD_EXPORT {{ base }}"; /quit
+      register: out_up_rsc
 
-    - name: (Opcional) borrar archivos locales en MikroTik
-      ansible.builtin.raw: "/file remove {{ base }}.backup"
-    - ansible.builtin.raw: "/file remove {{ base }}.rsc"
+    - name: Mostrar salida upload rsc
+      ansible.builtin.debug:
+        var: out_up_rsc.stdout
+
+    - name: Borrar archivos locales del MikroTik (opcional)
+      ansible.builtin.raw: >
+        /file remove "{{ base }}.backup";
+        /file remove "{{ base }}.rsc";
+        :put "OK_CLEAN {{ base }}"; /quit
+      register: out_clean
+
+    - name: Mostrar salida limpieza
+      ansible.builtin.debug:
+        var: out_clean.stdout
