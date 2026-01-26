@@ -6,7 +6,7 @@ import socket
 import time
 from datetime import datetime
 
-VERSION = "TPLINK_TFTP_BACKUP_v2026-01-24_01"
+VERSION = "TPLINK_BACKUP_TFTP_v2026-01-26_01"
 
 if len(sys.argv) != 7:
     print("❌ Uso: python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>", flush=True)
@@ -22,11 +22,6 @@ basename     = sys.argv[6]
 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
 filename = f"{basename}_{ts}.cfg"
 
-def clean(s: str) -> str:
-    if not s:
-        return ""
-    return re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", s)
-
 def tcp_ok(ip, p):
     try:
         s = socket.create_connection((ip, int(p)), timeout=5)
@@ -35,28 +30,38 @@ def tcp_ok(ip, p):
     except:
         return False
 
-PROMPT_PATTERNS = [
+def clean(s: str) -> str:
+    if not s:
+        return ""
+    return re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", s)
+
+PROMPTS = [
     r"#\s*$",
     r">\s*$",
     r"\]\s*$",
-    r"\$\s*$",
 ]
 
-def expect_any(child, patterns, timeout=20):
-    child.timeout = timeout
-    return child.expect(patterns)
+LOGIN_PATTERNS = [
+    r"Are you sure you want to continue connecting \(yes/no\)\?",
+    r"login as:",
+    r"User Name:",
+    r"Username:",
+    r"[Pp]assword:\s*$",
+    r"Press any key.*",
+    r"--More--",
+] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF]
 
 print(f"🧩 Script: {VERSION}", flush=True)
 print(f"🔎 Precheck TCP {host}:{port} ...", flush=True)
 if not tcp_ok(host, port):
-    print(f"❌ No hay conectividad TCP desde EE hacia {host}:{port}", flush=True)
+    print(f"❌ No hay conectividad TCP desde el EE hacia {host}:{port}", flush=True)
     sys.exit(1)
 print("✅ Puerto accesible desde el Execution Environment.", flush=True)
 
 print(f"🔐 Conectando a {host}:{port} como {ssh_user}...", flush=True)
 print(f"📦 Backup startup-config a TFTP: {tftp_server}  archivo: {filename}", flush=True)
 
-# Mantengo tu estilo de autenticación (sin tocar credenciales)
+# ✅ MISMA autenticación que ya te funcionó (NO la cambio)
 ssh_cmd = (
     f"ssh -tt "
     f"-o StrictHostKeyChecking=no "
@@ -71,26 +76,14 @@ ssh_cmd = (
 child = pexpect.spawn(ssh_cmd, encoding="utf-8", timeout=25)
 child.delaybeforesend = 0.05
 
-# 🔥 CLAVE: muchos TP-Link no muestran login hasta presionar ENTER
-time.sleep(0.3)
-child.sendline("")
-
 try:
-    # -------------------------
-    # LOGIN
-    # -------------------------
-    login_patterns = [
-        r"Are you sure you want to continue connecting \(yes/no\)\?",
-        r"login as:",
-        r"User Name:",
-        r"Username:",
-        r"[Pp]assword:\s*$",
-        r"Press any key.*",
-        r"--More--",
-    ] + PROMPT_PATTERNS + [pexpect.TIMEOUT, pexpect.EOF]
+    # 🔥 Muchos TP-Link no muestran nada hasta ENTER
+    time.sleep(0.2)
+    child.sendline("")
 
+    # ---- LOGIN LOOP ----
     while True:
-        i = expect_any(child, login_patterns, timeout=25)
+        i = child.expect(LOGIN_PATTERNS, timeout=25)
 
         if i == 0:
             child.sendline("yes")
@@ -102,11 +95,11 @@ try:
             child.sendline("")
         elif i == 6:
             child.send(" ")
-        elif i < 7 + len(PROMPT_PATTERNS):
-            # Llegó a prompt
+        elif i in (7, 8, 9):
+            # prompt encontrado
             break
-        elif i == 7 + len(PROMPT_PATTERNS):
-            # TIMEOUT: vuelve a “despertar” el CLI con Enter
+        elif i == 10:
+            # TIMEOUT: re-intenta “despertar” CLI
             child.sendline("")
             continue
         else:
@@ -114,38 +107,31 @@ try:
             print(clean(child.before), flush=True)
             sys.exit(1)
 
-    # Confirmar prompt “vivo”
+    # refrescar prompt (por banners)
     child.sendline("")
-    expect_any(child, PROMPT_PATTERNS + [pexpect.TIMEOUT], timeout=10)
+    child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=10)
 
-    # -------------------------
-    # ENABLE (si aplica)
-    # -------------------------
-    # Si el prompt no termina en #, intento enable (con misma pass por si pide)
-    prompt_txt = child.after or ""
-    if not re.search(r"#\s*$", prompt_txt):
+    # Intento apagar logs en pantalla (si el comando existe)
+    child.sendline("terminal no monitor")
+    child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=5)
+
+    # ---- ENABLE (si aplica) ----
+    # Si no está en '#', intento enable (misma clave como en tus ciscos)
+    if not re.search(r"#\s*$", child.after or ""):
         child.sendline("enable")
-        j = expect_any(child, [r"[Pp]assword:\s*$"] + PROMPT_PATTERNS + [pexpect.TIMEOUT, pexpect.EOF], timeout=10)
-        if j == 0:
+        k = child.expect([r"[Pp]assword:\s*$"] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF], timeout=10)
+        if k == 0:
             child.sendline(ssh_password)
-            expect_any(child, PROMPT_PATTERNS + [pexpect.TIMEOUT], timeout=15)
+            child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=15)
 
-    # Paginación off
+    # quitar paginación
     child.sendline("terminal length 0")
-    expect_any(child, PROMPT_PATTERNS + [pexpect.TIMEOUT], timeout=8)
+    child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=8)
 
-    # -------------------------
-    # COPY (manejo prompts)
-    # -------------------------
+    # ---- COPY ----
     cmd = f"copy startup-config tftp ip-address {tftp_server} filename {filename}"
     print(f"▶️ Ejecutando: {cmd}", flush=True)
     child.sendline(cmd)
-
-    overall_timeout = 120
-    no_progress_timeout = 20
-    t0 = time.time()
-    last_progress = time.time()
-    last_seen = ""
 
     copy_patterns = [
         r"\(Y/N\)|\[Y/N\]|\(y/n\)|\[y/n\]|confirm|Are you sure",
@@ -155,56 +141,43 @@ try:
         r"Press any key.*|Press Enter.*",
         r"--More--",
         r"%\s*Error|Error:|Invalid|Failed|No such|Timed out|TFTP",
-    ] + PROMPT_PATTERNS + [pexpect.TIMEOUT, pexpect.EOF]
+    ] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF]
 
-    while time.time() - t0 < overall_timeout:
-        k = expect_any(child, copy_patterns, timeout=8)
+    t0 = time.time()
+    while time.time() - t0 < 120:
+        j = child.expect(copy_patterns, timeout=10)
 
-        snap = (child.before or "") + (child.after or "")
-        if snap != last_seen:
-            last_seen = snap
-            last_progress = time.time()
-
-        if time.time() - last_progress > no_progress_timeout:
-            print("❌ COPY parece COLGADO (sin progreso).", flush=True)
-            print("📌 Última salida:", flush=True)
-            print(clean(child.before), flush=True)
-            child.close(force=True)
-            sys.exit(1)
-
-        # Si volvió a prompt => OK
-        # Los prompts están después del bloque de 7 patrones “copy”
-        if k >= 7 and k < 7 + len(PROMPT_PATTERNS):
+        # volvió a prompt => OK
+        if j >= 7 and j <= 9:
             print("✅ Backup finalizado (regresó a prompt).", flush=True)
             child.sendline("exit")
             child.close()
             sys.exit(0)
 
-        if k == 0:
+        if j == 0:
             child.sendline("Y")
-        elif k == 1:
+        elif j == 1:
             child.sendline(filename)
-        elif k == 2:
+        elif j == 2:
             child.sendline(tftp_server)
-        elif k == 3:
+        elif j == 3:
             child.sendline(tftp_server)
-        elif k == 4:
+        elif j == 4:
             child.sendline("")
-        elif k == 5:
+        elif j == 5:
             child.send(" ")
-        elif k == 6:
-            print("❌ Error reportado por el switch durante copy:", flush=True)
+        elif j == 6:
+            print("❌ El equipo reportó error durante el copy:", flush=True)
             print(clean(child.before), flush=True)
             child.close(force=True)
             sys.exit(1)
-        elif k == 7 + len(PROMPT_PATTERNS) + 1:
+        elif j == 11:
             print("❌ EOF durante copy. Última salida:", flush=True)
             print(clean(child.before), flush=True)
             sys.exit(1)
-        # TIMEOUT => sigue loop
+        # TIMEOUT => sigue esperando
 
-    print("❌ Timeout general ejecutando copy (120s).", flush=True)
-    print("📌 Última salida:", flush=True)
+    print("❌ Timeout general ejecutando copy (120s). Última salida:", flush=True)
     print(clean(child.before), flush=True)
     child.close(force=True)
     sys.exit(1)
@@ -216,4 +189,3 @@ except Exception as e:
     except:
         pass
     sys.exit(1)
-
