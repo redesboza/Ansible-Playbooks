@@ -16,7 +16,7 @@ def log(msg: str):
 
 
 def prompt_any():
-    # Detecta ...> o ...# incluso si viene pegado (sin ^)
+    # Prompt TP-Link: ...> o ...# (sin ^ para tolerar banners)
     return re.compile(r'(?m)[^\r\n]*[>#]\s*$')
 
 
@@ -25,29 +25,21 @@ def prompt_privileged():
 
 
 def parse_host_ip(tag: str, fallback_ip: str):
-    """
-    Acepta:
-      - HOST__IP
-      - HOST_IP (si al final hay una IPv4)
-      - solo HOST
-    """
     raw = (tag or "").strip()
-
     if "__" in raw:
         h, ip = raw.split("__", 1)
         return (h.strip() or "HOST", ip.strip() or fallback_ip)
 
+    # Ej: CAMARAS-MANTA_172.16.45.46
     m = re.match(r"^(.*)_(\d{1,3}(?:\.\d{1,3}){3})$", raw)
     if m:
-        h = m.group(1).strip() or "HOST"
-        ip = m.group(2).strip() or fallback_ip
-        return (h, ip)
+        return (m.group(1).strip() or "HOST", m.group(2).strip() or fallback_ip)
 
     return (raw if raw else "HOST", fallback_ip)
 
 
 def login_ssh(host, user, password, port):
-    # CLAVE: -tt fuerza pseudo-tty (muchos switches lo necesitan para CLI/prompt estable)
+    # CLAVE: -tt fuerza tty (muchos switches lo requieren)
     ssh_cmd = (
         f"ssh -tt -o StrictHostKeyChecking=no "
         f"-o UserKnownHostsFile=/dev/null "
@@ -72,8 +64,7 @@ def login_ssh(host, user, password, port):
         pexpect.EOF                                                       # 8
     ]
 
-    # Loop largo para banners/logging
-    for _ in range(30):
+    for _ in range(35):
         idx = child.expect(patterns, timeout=35)
 
         if idx == 0:
@@ -89,7 +80,7 @@ def login_ssh(host, user, password, port):
             log("[+] Login OK, prompt detectado.")
             return child
         if idx == 7:
-            # banner largo: enviamos ENTER y seguimos
+            # banner/logging largo
             child.sendline("")
             continue
         if idx == 8:
@@ -98,130 +89,126 @@ def login_ssh(host, user, password, port):
     raise RuntimeError("Timeout durante login (no apareció prompt/credenciales).")
 
 
-def enter_enable(child):
+def safe_expect(child, patterns, timeout):
     """
-    No esperamos prompt con ENTER vacío (algunos TP-Link no redibujan).
-    Hacemos enable directo y esperamos #.
+    Expect que no imprime el dump gigante de pexpect.TIMEOUT.
     """
-    any_p = prompt_any()
-    priv_p = prompt_privileged()
+    try:
+        return child.expect(patterns, timeout=timeout), (child.before or ""), (child.after or "")
+    except pexpect.TIMEOUT:
+        return None, (child.before or ""), ""
+    except pexpect.EOF:
+        raise RuntimeError("EOF: sesión SSH terminó inesperadamente.")
 
-    log("[+] Ejecutando enable (sin contraseña) para asegurar modo privilegiado (#)...")
+
+def try_enable(child) -> bool:
+    """
+    enable sin contraseña.
+    NO falla duro si el equipo no imprime prompt (caso real que tienes).
+    Retorna True si vemos #, False si no pudimos confirmar.
+    """
+    log("[+] Ejecutando enable (sin contraseña)...")
     child.sendline("enable")
 
-    patterns = [
-        priv_p,                                  # 0 -> quedó en #
-        re.compile(r'(?i)password\s*:\s*$'),      # 1 -> si pide password
-        any_p,                                    # 2 -> volvió a prompt (puede ser > o #)
-        pexpect.TIMEOUT,                          # 3
-        pexpect.EOF                               # 4
-    ]
-
-    idx = child.expect(patterns, timeout=35)
+    idx, before, after = safe_expect(
+        child,
+        [prompt_privileged(), re.compile(r'(?i)password\s*:\s*$'), prompt_any()],
+        timeout=20
+    )
 
     if idx == 0:
-        log("[+] Enable OK (#).")
-        return
+        log("[+] Enable confirmado (#).")
+        return True
 
     if idx == 1:
         # tu caso: sin password -> ENTER vacío
-        log("  ↳ Password en enable detectado, enviando ENTER vacío.")
         child.sendline("")
-        child.expect(priv_p, timeout=35)
-        log("[+] Enable OK (#).")
-        return
+        idx2, _, _ = safe_expect(child, [prompt_privileged(), prompt_any()], timeout=20)
+        if idx2 == 0:
+            log("[+] Enable confirmado (#).")
+            return True
+        # si no confirmó, seguimos igual
+        log("[WARN] Enable no se pudo confirmar (no apareció #). Continuaré igual.")
+        return False
 
     if idx == 2:
-        # Puede que ya esté en # o siga en >
-        after = (child.after or "").strip()
-        if after.endswith("#"):
-            log("[+] Ya estabas en modo privilegiado (#).")
-            return
-
-        # Si sigue en ">", reintento con ENTER + enable
-        log("[WARN] Aún no está en # (parece '>'). Reintentando enable...")
-        child.sendline("")          # a veces “despierta” el prompt
-        child.sendline("enable")
-
-        idx2 = child.expect([priv_p, re.compile(r'(?i)password\s*:\s*$'), any_p, pexpect.TIMEOUT, pexpect.EOF], timeout=35)
-        if idx2 == 0:
-            log("[+] Enable OK (#).")
-            return
-        if idx2 == 1:
-            child.sendline("")
-            child.expect(priv_p, timeout=35)
-            log("[+] Enable OK (#).")
-            return
-        # Si vuelve any_p otra vez, verificamos si es #
-        if idx2 == 2 and (child.after or "").strip().endswith("#"):
-            log("[+] Enable OK (#).")
-            return
-
-        raise RuntimeError("No fue posible entrar a modo privilegiado (#) con enable.")
-
-    if idx == 3:
-        # Si no hubo salida, hacemos un último intento
-        log("[WARN] No hubo salida tras enable (timeout). Enviando ENTER y reintentando...")
-        child.sendline("")
-        child.sendline("enable")
-        idx3 = child.expect([priv_p, re.compile(r'(?i)password\s*:\s*$'), any_p, pexpect.TIMEOUT, pexpect.EOF], timeout=35)
-        if idx3 == 0:
-            log("[+] Enable OK (#).")
-            return
-        if idx3 == 1:
-            child.sendline("")
-            child.expect(priv_p, timeout=35)
-            log("[+] Enable OK (#).")
-            return
-        if idx3 == 2 and (child.after or "").strip().endswith("#"):
-            log("[+] Enable OK (#).")
-            return
-        raise RuntimeError("Timeout ejecutando enable (sin ver prompt #).")
-
-    raise RuntimeError("EOF ejecutando enable.")
-
-
-def handle_common_interactives(child, timeout=50):
-    any_p = prompt_any()
-    patterns = [
-        any_p,                                                   # 0
-        re.compile(r'(?i)\(y/n\)\??\s*$'),                        # 1
-        re.compile(r'(?i)\([yY]/[nN]\)\??\s*$'),                  # 2
-        re.compile(r'(?i)are you sure.*\?\s*$'),                  # 3
-        re.compile(r'(?i)confirm\??\s*$'),                        # 4
-        pexpect.TIMEOUT,                                          # 5
-        pexpect.EOF                                               # 6
-    ]
-
-    for _ in range(10):
-        idx = child.expect(patterns, timeout=timeout)
-        if idx == 0:
+        # ya devolvió prompt (puede ser > o #)
+        txt = (after or "").strip()
+        if txt.endswith("#"):
+            log("[+] Ya estaba en modo privilegiado (#).")
             return True
-        if idx in (1, 2, 3, 4):
-            log("  ↳ Confirmación detectada, respondiendo 'y'")
-            child.sendline("y")
-            continue
-        if idx == 5:
-            return False
-        if idx == 6:
-            raise RuntimeError("EOF: sesión SSH terminó inesperadamente.")
+        log("[WARN] Sigue en modo usuario (>). Continuaré y reintentaré si el comando requiere privilegio.")
+        return False
+
+    # timeout sin salida
+    log("[WARN] Enable no respondió (timeout sin salida). Continuaré y validaré con el siguiente comando.")
     return False
 
 
-def send_command_wait_prompt(child, cmd, timeout=220):
+def command_need_privilege(output: str) -> bool:
+    """
+    Detecta mensajes típicos de falta de privilegio/permiso.
+    (TP-Link varía, así que lo hacemos amplio)
+    """
+    if not output:
+        return False
+    pat = re.compile(r'(?i)(denied|insufficient|privilege|permission|not allowed|invalid input|unrecognized|error)')
+    return bool(pat.search(output))
+
+
+def send_and_wait(child, cmd, timeout=120):
+    """
+    Envía cmd y espera:
+      - prompt
+      - o un OK típico (backup OK) aunque no vuelva prompt
+    Devuelve (success, output_text)
+    """
     log(f"[CMD] {cmd}")
     child.sendline(cmd)
 
-    ok = handle_common_interactives(child, timeout=50)
-    if ok:
-        return True
+    ok_patterns = [
+        prompt_any(),  # 0
+        re.compile(r'(?i)backup .* ok'),  # 1
+        re.compile(r'(?i)start to backup'),  # 2
+        re.compile(r'(?i)copy.*ok'),  # 3
+    ]
 
-    idx = child.expect([prompt_any(), pexpect.TIMEOUT, pexpect.EOF], timeout=timeout)
+    idx, before, after = safe_expect(child, ok_patterns, timeout=timeout)
+
+    # juntamos texto visto
+    out = (before or "") + (after or "")
+    out = out.strip()
+
     if idx == 0:
-        return True
-    if idx == 1:
-        raise RuntimeError(f"Timeout esperando prompt tras ejecutar: {cmd}")
-    raise RuntimeError("EOF: la sesión terminó mientras se esperaba el prompt.")
+        return True, out
+
+    if idx in (1, 2, 3):
+        # si vimos mensajes de backup, esperamos un poco más por prompt,
+        # pero si no llega, lo tomamos como éxito (porque ya dijo OK).
+        idx2, before2, after2 = safe_expect(child, [prompt_any()], timeout=40)
+        out2 = ((before2 or "") + (after2 or "")).strip()
+        if idx2 is not None:
+            return True, (out + "\n" + out2).strip()
+        return True, out  # éxito por texto OK
+
+    # timeout sin salida
+    return False, out
+
+
+def run_privileged(child, cmd, timeout=150):
+    """
+    Ejecuta cmd. Si detecta falta de privilegio, reintenta enable y vuelve a ejecutar.
+    """
+    success, out = send_and_wait(child, cmd, timeout=timeout)
+
+    # Si falló o detecta error típico de privilegio/invalid
+    if (not success) or command_need_privilege(out):
+        log("[WARN] Posible falta de privilegio o comando no aceptado. Reintentando enable + comando...")
+        try_enable(child)
+        success2, out2 = send_and_wait(child, cmd, timeout=timeout)
+        return success2, (out + "\n" + out2).strip()
+
+    return success, out
 
 
 def main():
@@ -241,7 +228,6 @@ def main():
     inv_tag = sys.argv[6]
 
     hostname, ip = parse_host_ip(inv_tag, host)
-
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_filename = sanitize_filename(f"{hostname}_{ip}_{ts}.cfg")
 
@@ -249,27 +235,29 @@ def main():
     try:
         child = login_ssh(host, user, password, port)
 
-        # Paso crítico
-        enter_enable(child)
+        # enable requerido (pero no matamos el flujo si el equipo no responde)
+        try_enable(child)
 
-        # write memory
-        log("[+] Guardando configuración: copy running-config startup-config")
-        send_command_wait_prompt(child, "copy running-config startup-config", timeout=140)
+        # 1) write memory
+        ok1, out1 = run_privileged(child, "copy running-config startup-config", timeout=180)
+        if out1:
+            log(f"[OUT] {out1}")
+        if not ok1:
+            log("[WARN] No se pudo confirmar el prompt tras 'copy running-config startup-config' (pero continúo).")
 
-        # backup
-        log(f"[+] Enviando startup-config a TFTP {tftp_server} filename {backup_filename}")
+        # 2) backup TFTP (comando exacto que validaste)
         cmd_backup = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
-        send_command_wait_prompt(child, cmd_backup, timeout=260)
+        ok2, out2 = run_privileged(child, cmd_backup, timeout=260)
+        if out2:
+            log(f"[OUT] {out2}")
+
+        if not ok2:
+            raise RuntimeError("El backup a TFTP no pudo confirmarse (timeout sin salida/OK).")
 
         log("[OK] Backup completado.")
         log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
 
         child.sendline("exit")
-        try:
-            child.expect(pexpect.EOF, timeout=10)
-        except Exception:
-            pass
-
         sys.exit(0)
 
     except Exception as e:
