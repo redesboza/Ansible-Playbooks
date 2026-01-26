@@ -6,11 +6,6 @@ import re
 import time
 from datetime import datetime
 
-# Netmiko (ya instalado en tu EE)
-from netmiko import ConnectHandler
-from netmiko.exceptions import NetmikoTimeoutException, NetmikoAuthenticationException
-
-# Fallback Paramiko (viene como dependencia de Netmiko)
 import paramiko
 
 
@@ -35,54 +30,61 @@ def parse_host_ip(tag: str, fallback_ip: str):
     return (raw if raw else "HOST", fallback_ip)
 
 
-PROMPT_RE = re.compile(r"(?m)[^\r\n]*[>#]\s*$")  # prompt tolerante
-
-
-def backup_ok(text: str) -> bool:
-    return bool(re.search(r"(?i)backup.*ok", text or ""))
+PROMPT_RE = re.compile(r"(?m)[^\r\n]*[>#]\s*$")
+OK_RE_1 = re.compile(r"(?i)backup user config file ok")
+OK_RE_2 = re.compile(r"(?i)backup.*ok")
+ERR_RE = re.compile(r"(?i)(denied|insufficient|not allowed|invalid|unrecognized|error|timed out|timeout|unreachable|failed)")
 
 
 def has_error(text: str) -> bool:
-    return bool(re.search(r"(?i)(denied|insufficient|not allowed|invalid|unrecognized|error)", text or ""))
+    return bool(ERR_RE.search(text or ""))
 
 
-# -------------------------
-# Fallback: Paramiko shell
-# -------------------------
-def p_read(shell, wait=0.4, max_loops=50):
-    """Lee del canal paramiko sin bloquear."""
-    data = ""
-    for _ in range(max_loops):
-        time.sleep(wait)
-        while shell.recv_ready():
-            data += shell.recv(65535).decode("utf-8", errors="ignore")
-        if data:
-            break
-    return data
+def backup_ok(text: str) -> bool:
+    t = text or ""
+    return bool(OK_RE_1.search(t)) or bool(OK_RE_2.search(t))
 
 
-def p_send(shell, cmd, wait=0.4):
-    shell.send(cmd + "\n")
-    time.sleep(wait)
-    return p_read(shell, wait=wait)
-
-
-def p_wait_prompt(shell, timeout=25):
-    """Asegura que aparece algún prompt >/# (en TP-Link a veces hay que mandar ENTER)."""
-    end = time.time() + timeout
+def p_drain(shell, seconds=0.8):
+    """Lee todo lo disponible durante X segundos (sin bloquear)."""
     buf = ""
-    # manda enters hasta que haya prompt
+    end = time.time() + seconds
     while time.time() < end:
-        shell.send("\n")
-        time.sleep(0.4)
-        buf += p_read(shell, wait=0.2, max_loops=10)
-        if PROMPT_RE.search(buf):
+        while shell.recv_ready():
+            buf += shell.recv(65535).decode("utf-8", errors="ignore")
+        time.sleep(0.1)
+    return buf
+
+
+def p_wait_for(shell, pattern: re.Pattern, timeout=30, poll=0.2):
+    """Espera hasta ver pattern en el buffer, devuelve lo que haya."""
+    buf = ""
+    end = time.time() + timeout
+    while time.time() < end:
+        while shell.recv_ready():
+            buf += shell.recv(65535).decode("utf-8", errors="ignore")
+        if pattern.search(buf):
             return buf
-    return buf  # devuelve lo último aunque no haya prompt
+        time.sleep(poll)
+    return buf
 
 
-def run_paramiko(host, user, password, port, tftp_server, backup_filename):
-    log("[*] Fallback: usando Paramiko (porque Netmiko no detectó prompt).")
+def p_send(shell, cmd: str):
+    shell.send(cmd + "\n")
+
+
+def p_cmd(shell, cmd: str, session_path: str, timeout=60):
+    """Ejecuta comando, espera prompt y loguea todo."""
+    log(f"[CMD] {cmd}")
+    p_send(shell, cmd)
+    out = p_wait_for(shell, PROMPT_RE, timeout=timeout)
+    if out:
+        with open(session_path, "a", encoding="utf-8") as f:
+            f.write(out)
+    return out
+
+
+def run_backup(host, user, password, port, tftp_server, filename, session_path):
     cli = paramiko.SSHClient()
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -93,45 +95,83 @@ def run_paramiko(host, user, password, port, tftp_server, backup_filename):
         password=password,
         look_for_keys=False,
         allow_agent=False,
-        timeout=40,
+        timeout=60,
         banner_timeout=60,
         auth_timeout=60,
     )
 
     shell = cli.invoke_shell(width=200, height=60)
     time.sleep(0.8)
-    _ = p_read(shell, wait=0.2, max_loops=20)  # limpia banners/logs
 
-    # Forzar que aparezca prompt
-    p_wait_prompt(shell, timeout=25)
+    # Limpia banners/logs iniciales
+    first = p_drain(shell, seconds=1.5)
+    if first:
+        with open(session_path, "a", encoding="utf-8") as f:
+            f.write(first)
 
-    # enable (sin contraseña): enable + ENTER
+    # Forzar prompt
+    shell.send("\n")
+    out = p_wait_for(shell, PROMPT_RE, timeout=30)
+    if out:
+        with open(session_path, "a", encoding="utf-8") as f:
+            f.write(out)
+
+    if not PROMPT_RE.search(out or ""):
+        # insistir por si hay logs
+        extra = ""
+        for _ in range(6):
+            shell.send("\n")
+            time.sleep(0.4)
+            extra += p_drain(shell, seconds=0.8)
+            if PROMPT_RE.search(extra):
+                break
+        if extra:
+            with open(session_path, "a", encoding="utf-8") as f:
+                f.write(extra)
+        out = (out or "") + extra
+
+    if not PROMPT_RE.search(out or ""):
+        raise RuntimeError("No se detectó prompt (>,#). Última salida:\n" + (out[-2000:] if out else "(vacío)"))
+
+    # enable sin contraseña
     log("[+] enable (sin contraseña)")
-    p_send(shell, "enable", wait=0.4)
-    p_send(shell, "", wait=0.6)
+    p_send(shell, "enable")
+    time.sleep(0.3)
+    p_send(shell, "")  # ENTER
+    en_out = p_wait_for(shell, PROMPT_RE, timeout=30)
+    if en_out:
+        with open(session_path, "a", encoding="utf-8") as f:
+            f.write(en_out)
 
-    # Guardar config
-    log("[+] copy running-config startup-config")
-    out1 = p_send(shell, "copy running-config startup-config", wait=0.8)
-    out1 += p_read(shell, wait=0.5, max_loops=30)
+    # Evitar paginación (si el equipo lo soporta)
+    p_send(shell, "terminal length 0")
+    tl = p_drain(shell, seconds=0.7)
+    if tl:
+        with open(session_path, "a", encoding="utf-8") as f:
+            f.write(tl)
+
+    # 1) Guardar config
+    out1 = p_cmd(shell, "copy running-config startup-config", session_path=session_path, timeout=120)
     if out1.strip():
         log("[OUT] " + out1.strip().replace("\r", ""))
     if has_error(out1):
-        raise RuntimeError("Error ejecutando: copy running-config startup-config")
+        raise RuntimeError("Error en 'copy running-config startup-config'. Salida:\n" + (out1[-2000:] if out1 else "(vacío)"))
 
-    # Backup TFTP
-    cmd_bkp = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
+    # 2) Backup a TFTP (comando exacto)
+    cmd_bkp = f"copy startup-config tftp ip-address {tftp_server} filename {filename}"
     log("[+] " + cmd_bkp)
-    p_send(shell, cmd_bkp, wait=0.8)
+    p_send(shell, cmd_bkp)
 
-    # Esperar mensaje OK (tu evidencia real)
+    # Esperar explícitamente OK / error (hasta 4 minutos)
     buf = ""
-    end = time.time() + 180
+    end = time.time() + 240
     while time.time() < end:
-        buf += p_read(shell, wait=0.6, max_loops=10)
-        if buf:
-            # imprimir incremental (opcional)
-            pass
+        chunk = p_drain(shell, seconds=0.8)
+        if chunk:
+            buf += chunk
+            with open(session_path, "a", encoding="utf-8") as f:
+                f.write(chunk)
+
         if backup_ok(buf):
             break
         if has_error(buf):
@@ -141,66 +181,13 @@ def run_paramiko(host, user, password, port, tftp_server, backup_filename):
         log("[OUT] " + buf.strip().replace("\r", ""))
 
     if has_error(buf):
-        raise RuntimeError("Error ejecutando backup a TFTP")
+        raise RuntimeError("El switch reportó error durante backup a TFTP.\nSalida:\n" + (buf[-2000:] if buf else "(vacío)"))
+
     if not backup_ok(buf):
-        log("[WARN] No vi 'Backup ... OK' explícito. Si el TFTP recibió el archivo, está OK.")
+        raise RuntimeError("NO se confirmó 'Backup ... OK'.\nSalida del switch:\n" + (buf[-2000:] if buf else "(vacío)"))
 
+    log("[OK] Backup confirmado por el switch.")
     cli.close()
-
-
-# -------------------------
-# Netmiko main
-# -------------------------
-def run_netmiko(host, user, password, port, tftp_server, backup_filename):
-    device = {
-        "device_type": "cisco_ios",
-        "host": host,
-        "username": user,
-        "password": password,
-        "port": port,
-        "secret": "",
-        "fast_cli": False,
-        "conn_timeout": 60,
-        "banner_timeout": 60,
-        "auth_timeout": 60,
-        "global_delay_factor": 2,
-    }
-
-    log(f"[+] Conectando por SSH (Netmiko): {user}@{host}:{port}")
-    conn = ConnectHandler(**device)  # <-- aquí es donde te está fallando
-    log("[+] Login OK.")
-
-    # Forzar prompt (a veces hay que dar ENTER)
-    conn.write_channel("\n")
-    time.sleep(0.4)
-    _ = conn.read_channel()
-
-    # enable sin contraseña
-    conn.write_channel("enable\n")
-    time.sleep(0.4)
-    conn.write_channel("\n")
-    time.sleep(0.6)
-    _ = conn.read_channel()
-
-    # Guardar config (tolerante)
-    out1 = conn.send_command_timing("copy running-config startup-config", strip_prompt=False, strip_command=False)
-    if out1.strip():
-        log("[OUT] " + out1.strip())
-    if has_error(out1):
-        raise RuntimeError("Error ejecutando: copy running-config startup-config")
-
-    # Backup
-    cmd_bkp = f"copy startup-config tftp ip-address {tftp_server} filename {backup_filename}"
-    out2 = conn.send_command_timing(cmd_bkp, strip_prompt=False, strip_command=False, max_loops=400)
-    if out2.strip():
-        log("[OUT] " + out2.strip())
-    if has_error(out2):
-        raise RuntimeError("Error ejecutando backup a TFTP")
-
-    if not backup_ok(out2):
-        log("[WARN] No vi 'Backup ... OK' explícito. Si el TFTP recibió el archivo, está OK.")
-
-    conn.disconnect()
 
 
 def main():
@@ -221,40 +208,20 @@ def main():
 
     hostname, ip = parse_host_ip(inv_tag, host)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_filename = sanitize_filename(f"{hostname}_{ip}_{ts}.cfg")
+    filename = sanitize_filename(f"{hostname}_{ip}_{ts}.cfg")
+
+    session_path = f"/tmp/tplink_backup_{sanitize_filename(hostname)}_{sanitize_filename(ip)}_{ts}.log"
 
     try:
-        # 1) Intentar Netmiko
-        run_netmiko(host, user, password, port, tftp_server, backup_filename)
-        log("[OK] Terminado con Netmiko.")
-        log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
+        log(f"[+] Conectando por SSH: {user}@{host}:{port}")
+        run_backup(host, user, password, port, tftp_server, filename, session_path)
+        log(f"[INFO] Archivo esperado en TFTP: {filename}")
+        log(f"[INFO] session_log: {session_path}")
         sys.exit(0)
-
-    except (NetmikoTimeoutException, NetmikoAuthenticationException) as e:
-        log(f"[WARN] Netmiko conexión/autenticación: {e}")
-        # si es auth real, no sirve reintentar con paramiko (pero lo intentamos igual si quieres)
-        try:
-            run_paramiko(host, user, password, port, tftp_server, backup_filename)
-            log("[OK] Terminado con Paramiko.")
-            log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
-            sys.exit(0)
-        except Exception as e2:
-            log(f"[ERROR] Fallback Paramiko falló: {e2}")
-            sys.exit(1)
-
     except Exception as e:
-        # Este es tu caso: Pattern not detected (#|>)
-        msg = str(e) or ""
-        log(f"[WARN] Netmiko falló: {msg}")
-
-        try:
-            run_paramiko(host, user, password, port, tftp_server, backup_filename)
-            log("[OK] Terminado con Paramiko.")
-            log(f"[INFO] Archivo esperado en TFTP: {backup_filename}")
-            sys.exit(0)
-        except Exception as e2:
-            log(f"[ERROR] Fallback Paramiko falló: {e2}")
-            sys.exit(1)
+        log(f"[ERROR] {e}")
+        log(f"[INFO] session_log: {session_path}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
