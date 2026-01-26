@@ -1,0 +1,38 @@
+---
+- name: Eliminar usuario local en TP-Link (Omada/JetStream)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    del_user: "prueba"
+
+  tasks:
+    - name: Eliminar usuario (enable + configure + no user name ...)
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -u
+          - /runner/project/TPLINK/delete_user_tplink.py
+          - "{{ ansible_host }}"
+          - "{{ ansible_user }}"
+          - "{{ ansible_ssh_pass }}"
+          - "{{ ansible_port | default('11110') }}"
+          - "{{ del_user }}"
+      delegate_to: localhost
+      register: out
+      no_log: true
+
+    - name: Mostrar salida
+      ansible.builtin.debug:
+        var: out.stdout
+      no_log: false
+
+    - name: Mostrar log de sesión (últimas 120 líneas)
+      ansible.builtin.shell: "ls -1t /tmp/tplink_deluser_*.log 2>/dev/null | head -n 1 | xargs -r tail -n 120"
+      delegate_to: localhost
+      register: slog
+      ignore_errors: yes
+
+    - name: Debug session log
+      ansible.builtin.debug:
+        var: slog.stdout
