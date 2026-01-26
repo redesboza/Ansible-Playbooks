@@ -1,4 +1,3 @@
----
 - name: Backup startup-config a TFTP (TP-Link)
   hosts: all
   gather_facts: no
@@ -8,14 +7,17 @@
 
   tasks:
     - name: Copiar startup-config al servidor TFTP (TP-Link)
-      ansible.builtin.command: >
-        python3 -u /runner/project/TPLINK/backup_tftp_tplink.py
-        {{ ansible_host }}
-        {{ ansible_user }}
-        {{ ansible_ssh_pass }}
-        {{ ansible_port | default('11110') }}
-        {{ tftp_server }}
-        {{ inventory_hostname }}_{{ ansible_host }}
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -u
+          - /runner/project/TPLINK/backup_tftp_tplink.py
+          - "{{ ansible_host }}"
+          - "{{ ansible_user }}"
+          - "{{ ansible_ssh_pass }}"
+          - "{{ ansible_port | default('11110') }}"
+          - "{{ tftp_server }}"
+          - "{{ inventory_hostname }}__{{ ansible_host }}"
       delegate_to: localhost
       register: out
 
