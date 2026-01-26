@@ -6,7 +6,7 @@ import socket
 import time
 from datetime import datetime
 
-VERSION = "TPLINK_BACKUP_TFTP_v2026-01-26_01"
+VERSION = "TPLINK_BACKUP_TFTP_v2026-01-26_02"
 
 if len(sys.argv) != 7:
     print("❌ Uso: python3 backup_tftp_tplink.py <host> <ssh_user> <ssh_password> <port> <tftp_server> <backup_basename>", flush=True)
@@ -34,6 +34,10 @@ def clean(s: str) -> str:
     if not s:
         return ""
     return re.sub(r"[^\x09\x0A\x0D\x20-\x7E]", "", s)
+
+def after_text(child) -> str:
+    """child.after puede ser str o pexpect.TIMEOUT/EOF. Retorna str seguro."""
+    return child.after if isinstance(child.after, str) else ""
 
 PROMPTS = [
     r"#\s*$",
@@ -116,8 +120,9 @@ try:
     child.expect(PROMPTS + [pexpect.TIMEOUT], timeout=5)
 
     # ---- ENABLE (si aplica) ----
-    # Si no está en '#', intento enable (misma clave como en tus ciscos)
-    if not re.search(r"#\s*$", child.after or ""):
+    # OJO: child.after puede ser TIMEOUT => usamos after_text()
+    cur_prompt = after_text(child)
+    if not re.search(r"#\s*$", cur_prompt):
         child.sendline("enable")
         k = child.expect([r"[Pp]assword:\s*$"] + PROMPTS + [pexpect.TIMEOUT, pexpect.EOF], timeout=10)
         if k == 0:
@@ -147,8 +152,8 @@ try:
     while time.time() - t0 < 120:
         j = child.expect(copy_patterns, timeout=10)
 
-        # volvió a prompt => OK
-        if j >= 7 and j <= 9:
+        # volvió a prompt => OK (indices 7,8,9)
+        if j in (7, 8, 9):
             print("✅ Backup finalizado (regresó a prompt).", flush=True)
             child.sendline("exit")
             child.close()
@@ -184,6 +189,10 @@ try:
 
 except Exception as e:
     print(f"❌ Error ejecutando backup TFTP en TP-Link: {e}", flush=True)
+    print("📌 DEBUG before:", flush=True)
+    print(clean(getattr(child, "before", "")), flush=True)
+    print("📌 DEBUG after:", flush=True)
+    print(repr(getattr(child, "after", "")), flush=True)
     try:
         child.close(force=True)
     except:
