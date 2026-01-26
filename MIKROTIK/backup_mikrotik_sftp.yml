@@ -1,6 +1,6 @@
 ---
 - name: Backup MikroTik por SSH y subir a SFTP (AWX Credentials)
-  hosts: mikrotik
+  hosts: all
   gather_facts: no
 
   # Estas variables ponlas como Extra Vars en la plantilla de AWX (o Credential Type)
