@@ -1,0 +1,23 @@
+---
+- name: Eliminar usuario en MikroTik (AWX)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    mt_user: "{{ mt_user }}"
+
+  tasks:
+    - name: Eliminar usuario si existe
+      ansible.builtin.raw: >
+        :if ([:len [/user find name="{{ mt_user }}"]] > 0) do={
+          /user remove [find name="{{ mt_user }}"];
+          :put ("OK_USER_DELETED {{ mt_user }}");
+        } else={
+          :put ("OK_USER_NOT_FOUND {{ mt_user }}");
+        };
+        /quit
+      register: out_del
+
+    - name: Mostrar resultado
+      ansible.builtin.debug:
+        var: out_del.stdout
