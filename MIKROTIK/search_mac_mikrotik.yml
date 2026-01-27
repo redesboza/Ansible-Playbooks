@@ -1,40 +1,47 @@
 ---
-- name: Buscar MAC en MikroTik (Tabla MAC + ARP)
+- name: Buscar MAC y mostrar puerto en MikroTik (AWX)
   hosts: all
   gather_facts: no
-
-  vars:
-    mac: "{{ mac }}"
 
   tasks:
     - name: Normalizar MAC
       ansible.builtin.set_fact:
         mac_u: "{{ mac | upper }}"
 
-    - name: Buscar en TABLA MAC (bridge host)
+    - name: Buscar MAC y mostrar puerto (bridge host / fallback)
       ansible.builtin.raw: >
-        :put "=== TABLA MAC: BRIDGE HOST ===";
-        :do { /interface bridge host print detail where mac-address={{ mac_u }} } on-error={ :put "BRIDGE HOST no disponible" };
-        /quit
-      register: mac_host
+        :local M "{{ mac_u }}";
+        :put "==============================";
+        :put ("MAC BUSCADA: " . $M);
+        :put "==============================";
 
-    - name: Buscar en TABLA MAC (bridge fdb)
-      ansible.builtin.raw: >
-        :put "=== TABLA MAC: BRIDGE FDB ===";
-        :do { /interface bridge fdb print detail where mac-address={{ mac_u }} } on-error={ :put "BRIDGE FDB no disponible" };
-        /quit
-      register: mac_fdb
+        :put "--- BRIDGE HOST (detalle) ---";
+        :do {
+          /interface bridge host print detail
+            where mac-address=$M;
+        } on-error={ :put "BRIDGE HOST: no disponible" };
 
-    - name: Buscar en ARP (IP <-> MAC)
-      ansible.builtin.raw: >
-        :put "=== ARP: IP <-> MAC ===";
-        :do { /ip arp print detail where mac-address={{ mac_u }} } on-error={ :put "ARP no disponible" };
-        /quit
-      register: arp_out
+        :put "--- BRIDGE HOST (simple) ---";
+        :do {
+          /interface bridge host print
+            where mac-address=$M;
+        } on-error={ :put "BRIDGE HOST simple: no disponible" };
 
-    - name: Imprimir resultados
+        :put "--- ARP (si tiene IP) ---";
+        :do {
+          /ip arp print detail
+            where mac-address=$M;
+        } on-error={ :put "ARP: no disponible" };
+
+        :put "--- DHCP LEASE (si aplica) ---";
+        :do {
+          /ip dhcp-server lease print detail
+            where active-mac-address=$M;
+        } on-error={ :put "DHCP LEASE: no disponible" };
+
+        /quit
+      register: out
+
+    - name: Imprimir salida
       ansible.builtin.debug:
-        msg:
-          - "{{ mac_host.stdout | default('') }}"
-          - "{{ mac_fdb.stdout | default('') }}"
-          - "{{ arp_out.stdout | default('') }}"
+        var: out.stdout
