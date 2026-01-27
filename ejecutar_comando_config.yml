@@ -1,0 +1,20 @@
+---
+- name: Ejecutar comando en modo configure terminal (Cisco SMB)
+  hosts: all
+  gather_facts: no
+
+  vars:
+    # Escribe aquí el comando que quieras ejecutar luego de "configure terminal"
+    # Puedes poner varios comandos separados por ";"
+    config_command: "ip http server"
+
+  tasks:
+    - name: Ejecutar comando(s) en config-mode con pexpect
+      delegate_to: localhost
+      command: >
+        python3 config_cmd.py
+        {{ ansible_host }}
+        {{ ansible_user }}
+        {{ ansible_ssh_pass }}
+        {{ ansible_port | default('11110') }}
+        "{{ config_command }}"
