@@ -1,5 +1,5 @@
 ---
-- name: Buscar MAC en MikroTik (ARP + Bridge Host + FDB)
+- name: Buscar MAC en MikroTik (Tabla MAC + ARP)
   hosts: all
   gather_facts: no
 
@@ -7,34 +7,34 @@
     mac: "{{ mac }}"
 
   tasks:
-    - name: Normalizar MAC (a mayúscula)
+    - name: Normalizar MAC
       ansible.builtin.set_fact:
         mac_u: "{{ mac | upper }}"
 
-    - name: Buscar MAC en ARP
+    - name: Buscar en TABLA MAC (bridge host)
       ansible.builtin.raw: >
-        :put "=== ARP (IP <-> MAC) ===";
-        /ip arp print where mac-address={{ mac_u }};
+        :put "=== TABLA MAC: BRIDGE HOST ===";
+        :do { /interface bridge host print detail where mac-address={{ mac_u }} } on-error={ :put "BRIDGE HOST no disponible" };
+        /quit
+      register: mac_host
+
+    - name: Buscar en TABLA MAC (bridge fdb)
+      ansible.builtin.raw: >
+        :put "=== TABLA MAC: BRIDGE FDB ===";
+        :do { /interface bridge fdb print detail where mac-address={{ mac_u }} } on-error={ :put "BRIDGE FDB no disponible" };
+        /quit
+      register: mac_fdb
+
+    - name: Buscar en ARP (IP <-> MAC)
+      ansible.builtin.raw: >
+        :put "=== ARP: IP <-> MAC ===";
+        :do { /ip arp print detail where mac-address={{ mac_u }} } on-error={ :put "ARP no disponible" };
         /quit
       register: arp_out
-
-    - name: Buscar MAC en Bridge Host (si aplica)
-      ansible.builtin.raw: >
-        :put "=== BRIDGE HOST (MAC -> PORT/INTERFACE) ===";
-        /interface bridge host print detail where mac-address={{ mac_u }};
-        /quit
-      register: br_out
-
-    - name: Buscar MAC en Bridge FDB (si aplica)
-      ansible.builtin.raw: >
-        :put "=== BRIDGE FDB (MAC forwarding) ===";
-        /interface bridge fdb print detail where mac-address={{ mac_u }};
-        /quit
-      register: fdb_out
 
     - name: Imprimir resultados
       ansible.builtin.debug:
         msg:
+          - "{{ mac_host.stdout | default('') }}"
+          - "{{ mac_fdb.stdout | default('') }}"
           - "{{ arp_out.stdout | default('') }}"
-          - "{{ br_out.stdout | default('') }}"
-          - "{{ fdb_out.stdout | default('') }}"
