@@ -1,5 +1,5 @@
 ---
-- name: Buscar MAC y mostrar puerto en MikroTik (AWX)
+- name: Buscar MAC por Torch en todas las interfaces (devuelve interfaz)
   hosts: all
   gather_facts: no
 
@@ -7,43 +7,46 @@
     - name: Normalizar MAC
       ansible.builtin.set_fact:
         mac_u: "{{ mac | upper }}"
+        watch_s: "{{ watch_seconds | default(10) }}"
 
-    - name: Tabla MAC - Bridge Host (detail)
-      ansible.builtin.raw: ':put "BRIDGE_HOST_DETAIL"; /interface bridge host print detail where mac-address={{ mac_u }}; /quit'
-      register: bh_detail
+    - name: Obtener lista de interfaces (ether/vlan/wlan/bridge)
+      ansible.builtin.raw: ':put "IFLIST"; /interface print without-paging where disabled=no; /quit'
+      register: if_out
 
-    - name: ARP (si existe)
-      ansible.builtin.raw: ':put "ARP_DETAIL"; /ip arp print detail where mac-address={{ mac_u }}; /quit'
-      register: arp_detail
-      failed_when: false
-
-    - name: DHCP Lease (si existe)
-      ansible.builtin.raw: ':put "DHCP_LEASE_DETAIL"; /ip dhcp-server lease print detail where active-mac-address={{ mac_u }}; /quit'
-      register: lease_detail
-      failed_when: false
-
-    # Limpieza de ANSI (colores) para que regex funcione bien
-    - name: Limpiar salida bridge host (quitar ANSI)
+    - name: Parsear nombres de interfaces
       ansible.builtin.set_fact:
-        bh_clean: "{{ (bh_detail.stdout | default('')) | regex_replace('\\x1B\\[[0-9;]*[A-Za-z]', '') }}"
-
-    - name: Extraer puerto/interfaz (on-interface o interface)
-      ansible.builtin.set_fact:
-        mac_port: >-
+        if_names: >-
           {{
-            (bh_clean | regex_search('on-interface=([^\\s]+)', '\\1'))
-            or (bh_clean | regex_search('interface=([^\\s]+)', '\\1'))
-            or 'NO_ENCONTRADO'
+            (if_out.stdout | default(''))
+            | regex_replace('\\x1B\\[[0-9;]*[A-Za-z]', '')
+            | regex_findall('name=([^\\s]+)')
           }}
 
-    - name: Resumen claro (PUERTO + IP si existe)
+    - name: Torch corto por interfaz ({{ watch_s }}s) para ver dónde aparece la MAC
+      ansible.builtin.raw: >
+        :local M "{{ mac_u }}";
+        :local I "{{ item }}";
+        :local T {{ watch_s }};
+        :put ("--- TORCH iface=" . $I . " ---");
+        /tool torch interface=$I duration=$T;
+        /quit
+      loop: "{{ if_names }}"
+      register: torch_all
+      failed_when: false
+
+    - name: Detectar interfaces candidatas (si la MAC aparece en el output)
+      ansible.builtin.set_fact:
+        mac_hits: >-
+          {{
+            torch_all.results
+            | selectattr('stdout','defined')
+            | selectattr('stdout','search', mac_u)
+            | map(attribute='item')
+            | list
+          }}
+
+    - name: Resultado final (interfaces donde se vio la MAC)
       ansible.builtin.debug:
         msg:
           - "MAC: {{ mac_u }}"
-          - "PUERTO/INTERFAZ (bridge host): {{ mac_port }}"
-          - "--- RAW BRIDGE HOST ---"
-          - "{{ bh_detail.stdout | default('') }}"
-          - "--- RAW ARP ---"
-          - "{{ arp_detail.stdout | default('') }}"
-          - "--- RAW DHCP LEASE ---"
-          - "{{ lease_detail.stdout | default('') }}"
+          - "Interfaces donde se observó (Torch): {{ mac_hits | default([]) }}"
